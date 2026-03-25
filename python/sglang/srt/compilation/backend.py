@@ -48,7 +48,14 @@ def make_backend(
     sglang_backend,
 ):
 
-    backend_cls = CUDAPiecewiseBackend if not is_npu() else NPUPiecewiseBackend
+    from sglang.srt.platforms import current_platform
+
+    if current_platform.is_out_of_tree():
+        backend_cls = current_platform.get_piecewise_backend_cls()
+    elif is_npu():
+        backend_cls = NPUPiecewiseBackend
+    else:
+        backend_cls = CUDAPiecewiseBackend
     return backend_cls(
         graph,
         compile_config,

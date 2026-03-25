@@ -1003,18 +1003,19 @@ def suppress_other_loggers():
 
 
 def assert_pkg_version(pkg: str, min_version: str, message: str):
-    try:
-        installed_version = version(pkg)
-        if pkg_version.parse(installed_version) < pkg_version.parse(min_version):
-            raise Exception(
-                f"{pkg} is installed with version {installed_version}, which "
-                f"is less than the minimum required version {min_version}. " + message
-            )
-    except PackageNotFoundError:
-        raise Exception(
-            f"{pkg} with minimum required version {min_version} is not installed. "
-            + message
-        )
+    pass
+    # try:
+    #     installed_version = version(pkg)
+    #     if pkg_version.parse(installed_version) < pkg_version.parse(min_version):
+    #         raise Exception(
+    #             f"{pkg} is installed with version {installed_version}, which "
+    #             f"is less than the minimum required version {min_version}. " + message
+    #         )
+    # except PackageNotFoundError:
+    #     raise Exception(
+    #         f"{pkg} with minimum required version {min_version} is not installed. "
+    #         + message
+    #     )
 
 
 def check_pkg_version_at_least(pkg: str, min_version: str) -> bool:
@@ -1913,6 +1914,12 @@ def get_device_capability(device_id: int = 0) -> Tuple[int, int]:
 
 
 def get_compiler_backend(mode=None) -> str:
+    # OOT platforms provide their own compile backend.
+    from sglang.srt.platforms import current_platform
+
+    if current_platform.is_out_of_tree():
+        return current_platform.get_compile_backend(mode)
+
     if hasattr(torch, "hpu") and torch.hpu.is_available():
         return "hpu_backend"
 

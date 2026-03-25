@@ -780,8 +780,13 @@ class MHATokenToKVPool(KVCache):
         self._create_buffers()
 
         self.device_module = torch.get_device_module(self.device)
+        from sglang.srt.platforms import current_platform
+
+        _use_alt_stream = _is_cuda or current_platform.is_cuda_alike()
         self.alt_stream = (
-            self.device_module.Stream() if _is_cuda and enable_alt_stream else None
+            self.device_module.Stream()
+            if _use_alt_stream and enable_alt_stream
+            else None
         )
 
         if enable_kv_cache_copy:
@@ -1262,7 +1267,11 @@ class HybridLinearKVPool(KVCache):
 
             TokenToKVPoolClass = MHATokenToKVPool
 
-            if _is_npu:
+            from sglang.srt.platforms import current_platform
+
+            if current_platform.is_out_of_tree():
+                TokenToKVPoolClass = current_platform.get_mha_kv_pool_cls()
+            elif _is_npu:
                 from sglang.srt.hardware_backend.npu.memory_pool_npu import (
                     NPUMHATokenToKVPool,
                 )
@@ -1283,7 +1292,9 @@ class HybridLinearKVPool(KVCache):
 
             TokenToKVPoolClass = MLATokenToKVPool
 
-            if _is_npu:
+            if current_platform.is_out_of_tree():
+                TokenToKVPoolClass = current_platform.get_mla_kv_pool_cls()
+            elif _is_npu:
                 from sglang.srt.hardware_backend.npu.memory_pool_npu import (
                     NPUMLATokenToKVPool,
                 )

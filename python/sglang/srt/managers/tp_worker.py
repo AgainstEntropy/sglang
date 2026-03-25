@@ -260,6 +260,19 @@ class TpModelWorker(BaseTpWorker):
         self._init_model_config()
         self._init_model_runner()
 
+        # Apply worker-level platform patches (phase 2 monkey patching).
+        from sglang.srt.platforms import current_platform
+
+        current_platform.apply_worker_patches()
+
+        # Apply deferred hooks: retry hooks that failed to resolve during the
+        # global apply_hooks() in engine.py (e.g. targets that only exist after
+        # model loading).  apply_hooks() is idempotent — already-applied hooks
+        # are skipped via the _patched set.
+        from sglang.srt.plugins.hook_registry import HookRegistry
+
+        HookRegistry.apply_hooks()
+
         if is_multi_layer_eagle:
             self._init_multi_layer_eagle_model_runners()
 

@@ -196,6 +196,8 @@ from sglang.srt.weight_sync.tensor_bucket import (
     FlattenedTensorMetadata,
 )
 
+from sglang.srt.platforms import current_platform
+
 _is_hip = is_hip()
 _is_npu = is_npu()
 _is_cpu_amx_available = cpu_has_amx_support()
@@ -205,6 +207,8 @@ if _is_npu:
     from sglang.srt.hardware_backend.npu.utils import init_npu_backend
 
     init_npu_backend()
+elif current_platform.is_out_of_tree():
+    current_platform.init_backend()
 
 MLA_ATTENTION_BACKENDS = [
     "aiter",
@@ -706,6 +710,17 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         elif self.device in ["npu", "cpu"]:
             self.init_attention_backend()
             self.init_device_graphs()
+        elif current_platform.is_out_of_tree():
+            if current_platform.support_cublas():
+                self.init_cublas()
+            self.init_attention_backend()
+            if current_platform.support_kernel_warmup():
+                self.kernel_warmup()
+            if current_platform.support_cuda_graph():
+                self.init_device_graphs()
+            else:
+                self.graph_runner = None
+                self.graph_mem_usage = 0
         else:
             self.graph_runner = None
             self.graph_mem_usage = 0
@@ -2528,14 +2543,18 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         logger.info(
             f"Capture {graph_backend[self.device]} begin. This can take up to several minutes. avail mem={before_mem:.2f} GB"
         )
-        graph_runners = defaultdict(
-            lambda: CudaGraphRunner,
-            {
-                "cpu": CPUGraphRunner,
-                "npu": NPUGraphRunner,
-            },
-        )
-        self.graph_runner = graph_runners[self.device](self)
+        if current_platform.is_out_of_tree():
+            GraphRunnerCls = current_platform.get_graph_runner_cls()
+            self.graph_runner = GraphRunnerCls(self)
+        else:
+            graph_runners = defaultdict(
+                lambda: CudaGraphRunner,
+                {
+                    "cpu": CPUGraphRunner,
+                    "npu": NPUGraphRunner,
+                },
+            )
+            self.graph_runner = graph_runners[self.device](self)
 
         after_mem = get_available_gpu_memory(self.device, self.gpu_id)
         self.graph_mem_usage = before_mem - after_mem
