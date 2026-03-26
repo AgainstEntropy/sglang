@@ -1671,6 +1671,14 @@ def get_mtgpu_memory_capacity():
 
 
 def get_device_memory_capacity(device: str = None):
+    # OOT platforms provide their own memory query via the platform class.
+    from sglang.srt.platforms import current_platform
+
+    if current_platform.is_out_of_tree():
+        mem_bytes = current_platform.get_device_total_memory()
+        if mem_bytes:
+            return mem_bytes / (1 << 20)  # bytes -> MiB
+        return None
     if is_cuda():
         gpu_mem = get_nvgpu_memory_capacity()
     elif is_hip():

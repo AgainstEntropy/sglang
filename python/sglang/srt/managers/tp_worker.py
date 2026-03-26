@@ -265,12 +265,11 @@ class TpModelWorker(BaseTpWorker):
 
         current_platform.apply_worker_patches()
 
-        # Apply deferred hooks: retry hooks that failed to resolve during the
-        # global apply_hooks() in engine.py (e.g. targets that only exist after
-        # model loading).  apply_hooks() is idempotent — already-applied hooks
-        # are skipped via the _patched set.
+        # Apply deferred hooks (phase 2, idempotent).
+        # Re-discover plugins in subprocess (spawn'd processes lose main-process state).
+        from sglang.srt.plugins import load_general_plugins
         from sglang.srt.plugins.hook_registry import HookRegistry
-
+        load_general_plugins()
         HookRegistry.apply_hooks()
 
         if is_multi_layer_eagle:
