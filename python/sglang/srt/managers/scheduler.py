@@ -3658,7 +3658,11 @@ def run_scheduler_process(
     pp_rank: int,
     dp_rank: Optional[int],
     pipe_writer,
-):
+):  
+    # Load plugins so hooks can override Scheduler and its dependencies.
+    from sglang.srt.plugins import load_plugins
+
+    load_plugins()
     dp_rank = configure_scheduler(
         server_args, tp_rank, attn_cp_rank, moe_dp_rank, moe_ep_rank, pp_rank, dp_rank
     )

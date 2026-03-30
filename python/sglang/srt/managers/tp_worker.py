@@ -260,18 +260,6 @@ class TpModelWorker(BaseTpWorker):
         self._init_model_config()
         self._init_model_runner()
 
-        # Apply worker-level platform patches (phase 2 monkey patching).
-        from sglang.srt.platforms import current_platform
-
-        current_platform.apply_worker_patches()
-
-        # Apply deferred hooks (phase 2, idempotent).
-        # Re-discover plugins in subprocess (spawn'd processes lose main-process state).
-        from sglang.srt.plugins import load_general_plugins
-        from sglang.srt.plugins.hook_registry import HookRegistry
-        load_general_plugins()
-        HookRegistry.apply_hooks()
-
         if is_multi_layer_eagle:
             self._init_multi_layer_eagle_model_runners()
 

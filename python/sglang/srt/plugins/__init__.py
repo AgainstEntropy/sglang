@@ -3,7 +3,7 @@ SGLang Unified Plugin Framework.
 
 Supports two types of plugins via setuptools entry_points:
 1. Hardware Platform Plugins (sglang.platform_plugins) - register custom hardware platforms
-2. General Function Plugins (sglang.general_plugins) - inject hooks, replace classes, etc.
+2. General Function Plugins (sglang.plugins) - inject hooks, replace classes, etc.
 
 Plugins are discovered automatically when installed via pip. Use the SGLANG_PLUGINS
 environment variable (comma-separated) to restrict which plugins are loaded.
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Entry point group names
 PLATFORM_PLUGINS_GROUP = "sglang.platform_plugins"
-GENERAL_PLUGINS_GROUP = "sglang.general_plugins"
+GENERAL_PLUGINS_GROUP = "sglang.plugins"
 
 # Guard against multiple loads in the same process
-_general_plugins_loaded = False
+_plugins_loaded = False
 
 
 def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
@@ -72,19 +72,23 @@ def load_plugins_by_group(group: str) -> dict[str, Callable[[], Any]]:
     return plugins
 
 
-def load_general_plugins():
+def load_plugins():
     """
-    Load and execute all general plugins. Idempotent - safe to call multiple times.
+    Load and execute all general plugins, then apply registered hooks.
 
-    General plugins are functions whose side effects (registering hooks, replacing
-    classes, etc.) are the desired behavior. Return values are ignored.
+    Idempotent - safe to call multiple times. General plugins are functions
+    whose side effects (registering hooks, replacing classes, etc.) are the
+    desired behavior. Return values are ignored.
+
+    After all plugins execute, ``HookRegistry.apply_hooks()`` is called
+    automatically so callers only need this single function call.
 
     This should be called early in every process (main, engine core, workers).
     """
-    global _general_plugins_loaded
-    if _general_plugins_loaded:
+    global _plugins_loaded
+    if _plugins_loaded:
         return
-    _general_plugins_loaded = True
+    _plugins_loaded = True
 
     plugins = load_plugins_by_group(GENERAL_PLUGINS_GROUP)
     for name, func in plugins.items():
@@ -93,3 +97,8 @@ def load_general_plugins():
             logger.info("Executed general plugin: %s", name)
         except Exception:
             logger.exception("Failed to execute general plugin: %s", name)
+
+    # Apply all registered hooks (idempotent — already-patched targets are skipped).
+    from sglang.srt.plugins.hook_registry import HookRegistry
+
+    HookRegistry.apply_hooks()

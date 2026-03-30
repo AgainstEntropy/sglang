@@ -43,12 +43,12 @@ class HookRegistry:
     """
     Global registry for function/method hooks.
 
-    Thread safety: All registration should happen during load_general_plugins()
+    Thread safety: All registration should happen during load_plugins()
     phase (single-threaded). apply_hooks() should be called once before the
     engine starts serving requests.
     """
 
-    _hooks: dict[str, list[tuple[HookType, Callable, int]]] = defaultdict(list)
+    _hooks: dict[str, list[tuple[HookType, Callable]]] = defaultdict(list)
     _patched: set[str] = set()
 
     @classmethod
@@ -57,7 +57,6 @@ class HookRegistry:
         target: str,
         hook_fn: Callable,
         hook_type: HookType = HookType.AFTER,
-        priority: int = 100,
     ):
         """
         Register a hook on a target function.
@@ -71,15 +70,12 @@ class HookRegistry:
                 - AROUND:  fn(original_fn, *args, **kwargs) -> result
                 - REPLACE: fn(*args, **kwargs) -> result
             hook_type: Type of hook (default: AFTER).
-            priority: Lower numbers execute first (default: 100).
         """
-        cls._hooks[target].append((hook_type, hook_fn, priority))
-        cls._hooks[target].sort(key=lambda x: x[2])
+        cls._hooks[target].append((hook_type, hook_fn))
         logger.debug(
-            "Registered %s hook on %s (priority=%d)",
+            "Registered %s hook on %s",
             hook_type.value,
             target,
-            priority,
         )
 
     @classmethod
@@ -112,7 +108,7 @@ class HookRegistry:
 
         # Build the wrapper chain
         wrapped = original_fn
-        for hook_type, hook_fn, _ in hooks:
+        for hook_type, hook_fn in hooks:
             wrapped = _wrap_fn(wrapped, hook_fn, hook_type)
 
         setattr(obj, attr_name, wrapped)
@@ -131,9 +127,13 @@ def resolve_obj(qualname: str):
 
     Supports nested classes: "sglang.srt.managers.scheduler.Scheduler"
     resolves to the Scheduler class in the scheduler module.
+
+    Also accepts entry_points-style "module.path:Attr" notation (colon
+    is treated as a dot separator).
     """
     import importlib
 
+    qualname = qualname.replace(":", ".")
     parts = qualname.split(".")
     # Try progressively shorter module paths
     for i in range(len(parts), 0, -1):
@@ -195,3 +195,30 @@ def _wrap_fn(
 
     else:
         raise ValueError(f"Unknown hook type: {hook_type}")
+
+
+def sglang_hook(
+    target: str,
+    type: HookType = HookType.AFTER,
+) -> Callable:
+    """Decorator that registers a function as a hook on *target*.
+
+    Usage::
+
+        @sglang_hook("sglang.srt.managers.scheduler.Scheduler.schedule",
+                      type=HookType.AROUND)
+        def my_timer(original_fn, *args, **kwargs):
+            start = time.perf_counter()
+            result = original_fn(*args, **kwargs)
+            print(f"Elapsed: {time.perf_counter() - start:.3f}s")
+            return result
+
+    The decorated function is returned unchanged so it can still be
+    called directly if needed.
+    """
+
+    def decorator(fn: Callable) -> Callable:
+        HookRegistry.register(target, fn, type)
+        return fn
+
+    return decorator

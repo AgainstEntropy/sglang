@@ -590,6 +590,18 @@ def get_available_gpu_memory(
         free_gpu_memory, total_gpu_memory = torch.musa.mem_get_info()
     elif device == "mps":
         free_gpu_memory = psutil.virtual_memory().available
+    else:
+        from sglang.srt.platforms import current_platform
+
+        if not current_platform.is_out_of_tree():
+            raise ValueError(
+                f"Unsupported device type: {device!r}. "
+                "If this is an OOT platform, ensure it is properly registered "
+                "via the 'sglang.platform_plugins' entry point."
+            )
+        total_mem = current_platform.get_device_total_memory(gpu_id)
+        used_mem = current_platform.get_current_memory_usage()
+        free_gpu_memory = total_mem - used_mem
 
     if distributed:
         tensor = torch.tensor(free_gpu_memory, dtype=torch.float32)

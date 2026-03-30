@@ -711,11 +711,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             self.init_attention_backend()
             self.init_device_graphs()
         elif current_platform.is_out_of_tree():
-            if current_platform.support_cublas():
-                self.init_cublas()
             self.init_attention_backend()
-            if current_platform.support_kernel_warmup():
-                self.kernel_warmup()
             if current_platform.support_cuda_graph():
                 self.init_device_graphs()
             else:
@@ -1467,7 +1463,14 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         self.server_args.load_format = load_format
         self.load_config = load_config
 
-        if recapture_cuda_graph and (self.device == "cuda" or self.device == "musa"):
+        if recapture_cuda_graph and (
+            self.device == "cuda"
+            or self.device == "musa"
+            or (
+                current_platform.is_out_of_tree()
+                and current_platform.support_cuda_graph()
+            )
+        ):
             self.init_device_graphs()
 
         logger.info("Update weights end.")
@@ -2534,8 +2537,10 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         tic = time.perf_counter()
         before_mem = get_available_gpu_memory(self.device, self.gpu_id)
         graph_backend = defaultdict(
-            lambda: "cuda graph",
+            lambda: f"{current_platform.device_name} graph",
             {
+                "cuda": "cuda graph",
+                "musa": "cuda graph",
                 "cpu": "cpu graph",
                 "npu": "npu graph",
             },

@@ -1,94 +1,230 @@
-# SGLang Plugin
+# SGLang Plugin System
 
 ## Overview
 
-Inspired by vLLM's platform abstraction. Allows hardware vendors to extend SGLang **without modifying the main repository code**.
+Allows hardware vendors and developers to extend SGLang **without modifying the main repository code**.
 
-The framework provides two plugin types, both discovered and loaded via Python's standard `setuptools` entry_points mechanism:
+The framework provides two plugin types, both discovered via Python's standard `setuptools` entry_points:
 
 | Plugin Type | Entry Point Group | Purpose |
 |---|---|---|
-| **Hardware Platform Plugin** | `sglang.platform_plugins` | Register a custom hardware platform (device operations, KV cache pools, attention backends, CUDA Graph, compilation backends, etc.) |
-| **General Function Plugin** | `sglang.general_plugins` | Inject hooks (before/after/around/replace) into any function/method in sglang, or replace entire classes |
+| **Hardware Platform Plugin** | `sglang.platform_plugins` | Register a custom hardware platform (device operations, KV cache pools, attention backends, graph capture, compilation backends, etc.) |
+| **General Plugin** | `sglang.plugins` | Inject hooks (before/after/around/replace) into any function/method, or replace entire classes |
 
 ### Principles
 
-- **Non-intrusive**: Existing CUDA/ROCm/NPU/XPU code remains unchanged. OOT code paths are added as `elif` branches alongside existing hardware-specific logic.
+- **Non-intrusive**: Existing CUDA/ROCm/NPU/XPU code remains unchanged. OOT code paths are added alongside existing hardware-specific logic.
 - **Zero configuration**: Plugins are automatically discovered after `pip install`, no sglang code changes required.
-- **SGLANG_PLUGINS environment variable**: Controls which plugins to load via a comma-separated whitelist. Only one hardware plugin can be loaded, while multiple general plugins can be loaded simultaneously.
+- **Environment variable control**: `SGLANG_PLUGINS` (comma-separated) controls which plugins to load. `SGLANG_PLATFORM` forces a specific platform class for dev/testing.
+
+### Current Scope & Future Direction
+
+The plugin system currently targets **out-of-tree (OOT) hardware platforms** — enabling new devices to integrate with SGLang without any changes to the main repository. The main-repo hardware paths (CUDA, ROCm, NPU, XPU, etc.) continue to use the existing `is_cuda()`/`is_npu()`/… utility functions.
+
+As the plugin interfaces mature and stabilize, in-tree hardware backends can be gradually migrated to the same plugin architecture. This would replace the scattered `if device == "cuda" … elif device == "npu" …` branches throughout the codebase with a single polymorphic dispatch through the platform interface, making each hardware backend self-contained and the core engine hardware-agnostic.
+
+## Architecture
+
+### Platform Hierarchy
+
+The platform hierarchy uses a DeviceMixin pattern to share device operations between SRT (LLM inference) and Multimodal subsystems:
+
+```
+DeviceMixin (shared device identity + operations)
+├── SRTPlatform(DeviceMixin)           # + graph runner, KV pool, …
+│   └── MySRTPlatform(SRTPlatform, MyDeviceMixin)   # OOT plugin
+└── MMPlatform(DeviceMixin)            # + attention backend, VAE, … (future)
+    └── MyMMPlatform(MMPlatform, MyDeviceMixin)      # OOT plugin
+```
+
+Key design points:
+- **DeviceMixin** provides platform identity queries (`is_cuda()`, `is_npu()`, etc.) and device operations (`set_device()`, `get_device_name()`, etc.)
+- **SRTPlatform** adds SRT-specific factory methods, capability flags, and lifecycle hooks
+- OOT plugins implement a **device mixin** (vendor-specific operations) and compose it with **SRTPlatform** via multiple inheritance
+- All methods are **instance methods** (not classmethods), called through the `current_platform` singleton
+- Device operations and factory methods raise `NotImplementedError` by default (fail-fast)
+- Capability flags use safe conservative defaults (`False`/`pass`)
+
+### Platform Discovery (`current_platform`)
+
+`current_platform` is a **lazy singleton** in `sglang.srt.platforms`. On first access it resolves the active platform through the following priority chain:
+
+```
+1. SGLANG_PLATFORM env var         → Force a specific platform class (dev/testing)
+2. entry_points("sglang.platform_plugins")  → OOT plugin auto-discovery
+   - At most one OOT plugin can be active; otherwise RuntimeError
+   - SGLANG_PLUGINS env var filters which plugins are loaded
+3. Fallback                        → base SRTPlatform(UNSPECIFIED)
+```
+
+### Plugin Loading Flow
+
+`load_plugins()` discovers and executes general plugins, then applies all registered hooks. It is called at four points:
+
+| Call Site | Process | Timing |
+|---------|------|------|
+| `cli/serve.py` serve() | Main | Before `prepare_server_args()` |
+| `launch_server.py` `__main__` | Main | Before `prepare_server_args()` |
+| `engine.py` `_launch_subprocesses()` | Main | Before `server_args.check_server_args()` |
+| `scheduler.py` `run_scheduler_process()` | Subprocess | Before `Scheduler()` construction |
+
+> **Note**: `load_plugins()` is idempotent (guarded by `_plugins_loaded` flag). In spawn'd subprocesses the flag resets, so plugins are correctly re-loaded.
+
+```
+load_plugins()
+  ├── load_plugins_by_group("sglang.plugins")  → discover entry_points
+  ├── for each plugin: func()                  → side effects (register hooks, etc.)
+  └── HookRegistry.apply_hooks()               → monkey-patch targets
+```
+
+---
 
 ## Plugin Type 1: Hardware Platform Plugin
 
 ### Description
 
-A hardware platform plugin registers a `Platform` subclass that tells SGLang how to interact with a specific hardware backend. The platform controls the following:
+A hardware platform plugin registers an `SRTPlatform` subclass that tells SGLang how to interact with a specific hardware backend.
 
-- **Device operations**: `set_device()`, `get_device_name()`, `get_device_total_memory()`, etc.
-- **Capability flags**: `support_cuda_graph()`, `support_cublas()`, `support_kernel_warmup()`, `supports_fp8()`, etc.
-- **Subsystem factory methods**: Specify which KV cache pool, Graph Runner, memory allocator, compilation backend, and attention backend to use
-- **Configuration lifecycle hooks**: `apply_server_args_defaults()`, `init_backend()`, `apply_worker_patches()`, etc.
-- **MultiPlatformOp dispatch**: Compatible with the existing MultiPlatformOp mechanism, dispatching to custom methods via key. Specifies which `forward_<key>()` method to call for fused operators
+### Quick Start
 
-### Platform Interface
+**1. Create a minimal package:**
 
-```python
-from sglang.srt.platforms.interface import Platform, PlatformEnum
-
-class MyPlatform(Platform):
-    _enum = PlatformEnum.OOT
-    device_name: str = "my_device"
-    device_type: str = "cuda"          # torch device type
-    dispatch_key: str = "CUDA"         # PyTorch dispatch key
-    device_control_env_var: str = "MY_VISIBLE_DEVICES"
-    dist_backend: str = "nccl"         # or "hccl", "gloo", etc.
+```
+my_platform_plugin/
+├── pyproject.toml
+└── my_platform_plugin/
+    ├── __init__.py    # activate() function
+    ├── device.py      # MyDeviceMixin
+    └── platform.py    # MySRTPlatform
 ```
 
-#### Identity Queries (Instance Methods)
+**2. `pyproject.toml`:**
+
+```toml
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-platform-plugin"
+version = "0.1.0"
+
+[project.entry-points."sglang.platform_plugins"]
+my_device = "my_platform_plugin:activate"
+```
+
+**3. `__init__.py`** — activation function:
+
+```python
+def activate():
+    """Return fully-qualified class name to activate, or None to skip."""
+    if _my_device_is_available():
+        return "my_platform_plugin.platform.MySRTPlatform"
+    return None
+```
+
+**4. `device.py`** — device mixin:
+
+```python
+from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
+
+class MyDeviceMixin(DeviceMixin):
+    _enum = PlatformEnum.OOT
+    device_name = "my_device"
+    device_type = "my_device"   # torch device type
+
+    def set_device(self, device) -> None: ...
+    def get_device_name(self, device_id=0) -> str: ...
+    def get_device_total_memory(self, device_id=0) -> int: ...
+    def get_current_memory_usage(self, device=None) -> float: ...
+    def get_device_capability(self, device_id=0): ...
+    def get_torch_distributed_backend_str(self) -> str: ...
+```
+
+**5. `platform.py`** — SRT platform:
+
+```python
+from sglang.srt.platforms.interface import SRTPlatform
+from my_platform_plugin.device import MyDeviceMixin
+
+class MySRTPlatform(SRTPlatform, MyDeviceMixin):
+    def get_default_attention_backend(self) -> str: ...
+    def support_cuda_graph(self) -> bool: ...
+    # ... override other methods as needed
+```
+
+**6. Install and verify:**
+
+```bash
+pip install -e my_platform_plugin/
+python -c "from sglang.srt.platforms import current_platform; print(current_platform)"
+```
+
+### Platform Interface Reference
+
+#### Identity Queries (from DeviceMixin)
 
 | Method | Default | Description |
 |---|---|---|
-| `is_cuda_alike()` | `False` for OOT | Override to `True` if the hardware supports CUDA-like APIs (enables alt_stream, etc.) |
+| `is_cuda()` | Based on `_enum` | Whether this is an NVIDIA CUDA platform |
+| `is_rocm()` | Based on `_enum` | Whether this is an AMD ROCm platform |
+| `is_npu()` | Based on `_enum` | Whether this is a Huawei NPU platform |
+| `is_cpu()` | Based on `_enum` | Whether this is a CPU-only platform |
+| `is_xpu()` | Based on `_enum` | Whether this is an Intel XPU platform |
+| `is_musa()` | Based on `_enum` | Whether this is a Moore Threads MUSA platform |
+| `is_cuda_alike()` | CUDA+ROCM+MUSA | True if the hardware supports CUDA-like APIs |
 | `is_out_of_tree()` | `True` for OOT | Automatically detected based on `_enum = PlatformEnum.OOT` |
 
-#### Capability Flags (Class Methods)
+#### Device Operations (from DeviceMixin)
 
 | Method | Default | Description |
 |---|---|---|
-| `support_cuda_graph()` | `True` | Whether device Graph capture is supported |
-| `support_cublas()` | `False` | Whether to initialize cuBLAS |
-| `support_kernel_warmup()` | `False` | Whether to run kernel warmup |
-| `support_torch_compile()` | `True` | Whether torch.compile is available |
+| `set_device(device)` | `raise NotImplementedError` | Set the current device |
+| `get_device_name(device_id)` | `raise NotImplementedError` | Get human-readable device name |
+| `get_device_total_memory(device_id)` | `raise NotImplementedError` | Get total device memory in bytes |
+| `get_current_memory_usage(device)` | `raise NotImplementedError` | Get current peak memory usage in bytes |
+| `get_device_capability(device_id)` | `raise NotImplementedError` | Get device compute capability `(major, minor)` |
+| `get_torch_distributed_backend_str()` | `raise NotImplementedError` | Return distributed backend string (e.g. "nccl", "hccl") |
+
+#### Capability Flags (from SRTPlatform)
+
+| Method | Default | Description |
+|---|---|---|
+| `support_cuda_graph()` | `False` | Whether device graph capture is supported |
 | `supports_fp8()` | `False` | Whether FP8 quantization is supported |
 | `is_pin_memory_available()` | `True` | Whether pinned memory is available |
 
-#### Subsystem Factory Methods (Class Methods)
+#### Subsystem Factory Methods (from SRTPlatform)
 
-| Method | Default Return Value | Description |
+| Method | Default | Description |
 |---|---|---|
-| `get_default_attention_backend()` | `"flashinfer"` | Default attention backend name |
-| `get_graph_runner_cls()` | `CudaGraphRunner` | Graph Runner class |
-| `get_mha_kv_pool_cls()` | `MHATokenToKVPool` | MHA KV cache pool class |
-| `get_mla_kv_pool_cls()` | `MLATokenToKVPool` | MLA KV cache pool class |
-| `get_nsa_kv_pool_cls()` | `NSATokenToKVPool` | NSA KV cache pool class (DeepSeek V3.2) |
-| `get_paged_allocator_cls()` | `PagedTokenToKVPoolAllocator` | Paged allocator class |
-| `get_piecewise_backend_cls()` | `CUDAPiecewiseBackend` | Piecewise compilation backend class |
+| `get_default_attention_backend()` | `raise NotImplementedError` | Default attention backend name |
+| `get_graph_runner_cls()` | `raise NotImplementedError` | Graph Runner class |
+| `get_mha_kv_pool_cls()` | `raise NotImplementedError` | MHA KV cache pool class |
+| `get_mla_kv_pool_cls()` | `raise NotImplementedError` | MLA KV cache pool class |
+| `get_nsa_kv_pool_cls()` | `raise NotImplementedError` | NSA KV cache pool class (DeepSeek V3.2) |
+| `get_paged_allocator_cls()` | `raise NotImplementedError` | Paged allocator class |
+| `get_piecewise_backend_cls()` | `raise NotImplementedError` | Piecewise compilation backend class |
 | `get_compile_backend(mode)` | `"inductor"` | Compilation backend string |
 | `get_dispatch_key_name()` | `"native"` | MultiPlatformOp dispatch key name |
 
-#### Lifecycle Hooks (Class Methods)
+#### Lifecycle Hooks (from SRTPlatform)
 
 | Method | Invocation Timing | Purpose |
 |---|---|---|
-| `pre_register_and_update()` | Process startup (phase 1) | Custom CLI, etc. |
-| `apply_global_patches()` | Process startup | Global monkey patches |
-| `apply_server_args_defaults(server_args)` | After ServerArgs parsing (phase 2) | Set platform-specific defaults |
-| `check_and_update_config(server_args)` | Configuration validation (phase 3) | Raise exceptions for incompatible configurations |
-| `init_backend()` | On model runner import (before ModelRunner construction) |
-| `apply_worker_patches()` | After Model Runner initialization (per worker) | Worker-level monkey patches |
+| `apply_server_args_defaults(server_args)` | After ServerArgs parsing, in `__post_init__` | Set platform-specific defaults |
+| `init_backend()` | In each worker, before model construction | One-time backend initialization |
 
+### Environment Variables
 
+| Variable | Description |
+|---|---|
+| `SGLANG_PLATFORM` | Force a specific platform class by fully-qualified name. Bypasses entry_points discovery. Supports both dot notation (`a.b.MyClass`) and entry_points notation (`a.b:MyClass`). |
+| `SGLANG_PLUGINS` | Comma-separated whitelist of plugin names to load. Applies to both platform and general plugins. |
 
-## Plugin Type 2: General Function Plugin
+---
+
+## Plugin Type 2: General Plugin
 
 ### Description
 
@@ -99,63 +235,152 @@ General function plugins inject behavior into sglang **without requiring a custo
 - **Performance profiling**: Add timing to critical functions
 - **A/B testing**: Replace implementations at runtime
 
-### Insertion Points in the Main Framework
+### Quick Start
 
-Two locations where `load_general_plugins()` + `HookRegistry.apply_hooks()` are called:
+**1. Create a minimal package:**
 
-| Call Site | Process | Timing | Code Location |
-|---------|------|------|---------|
-| `_launch_subprocesses()` | Main process | After `_set_envs_and_config()`, before `server_args.check_server_args()` | `engine.py:998-1002` |
-| `TpModelWorker.__init__()` | Worker subprocess | After `apply_worker_patches()`, before model inference | `tp_worker.py:251-255` |
+```
+my_general_plugin/
+├── pyproject.toml
+└── my_general_plugin/
+    └── __init__.py    # register() function
+```
+
+**2. `pyproject.toml`:**
+
+```toml
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-general-plugin"
+version = "0.1.0"
+
+[project.entry-points."sglang.plugins"]
+my_plugin = "my_general_plugin:register"
+```
+
+**3. `__init__.py`** — register hooks:
+
+```python
+from sglang.srt.plugins.hook_registry import HookRegistry, HookType
+
+def register():
+    """Entry point called by load_plugins()."""
+    HookRegistry.register(
+        "sglang.srt.managers.scheduler.Scheduler.__init__",
+        my_hook,
+        HookType.AROUND,
+    )
+
+def my_hook(original_fn, self, *args, **kwargs):
+    result = original_fn(self, *args, **kwargs)
+    print(f"Scheduler initialized! gpu_id={self.gpu_id}")
+    return result
+```
+
+**4. Install and run:**
+
+```bash
+pip install -e my_general_plugin/
+sglang serve --model-path <model> [options]
+# Look for "Scheduler initialized!" in logs
+```
 
 ### Hook Types
 
 `HookRegistry` supports four hook types:
 
-| Hook Type | Function Signature | Description |
+| Hook Type | Signature | Description |
 |---|---|---|
-| **BEFORE** | `fn(*args, **kwargs) -> (args, kwargs) \| None` | Runs before the original function. Return `None` to keep arguments unchanged, or return `(args, kwargs)` to modify them. |
-| **AFTER** | `fn(result, *args, **kwargs) -> new_result \| None` | Runs after the original function. Return `None` to keep the result unchanged, or return a new value to replace it. |
-| **AROUND** | `fn(original_fn, *args, **kwargs) -> result` | Wraps the original function. You must call `original_fn` yourself. Gives full control over execution. |
+| **BEFORE** | `fn(*args, **kwargs) -> (args, kwargs) \| None` | Runs before the original. Return `None` to keep args unchanged, or `(args, kwargs)` to modify. |
+| **AFTER** | `fn(result, *args, **kwargs) -> new_result \| None` | Runs after the original. Return `None` to keep result, or a new value to replace. |
+| **AROUND** | `fn(original_fn, *args, **kwargs) -> result` | Wraps the original. You must call `original_fn` yourself. Full control over execution. |
 | **REPLACE** | `fn(*args, **kwargs) -> result` | Completely replaces the original function. |
 
-Typical usage examples:
+### Registration API
+
+Hooks can be registered using the **imperative API** or the **decorator API**:
 
 ```python
-# 1. Timing decorator
-def time_it(original_fn, *args, **kwargs):
+# --- Imperative API ---
+from sglang.srt.plugins.hook_registry import HookRegistry, HookType
+
+def my_timer(original_fn, *args, **kwargs):
     start = time.perf_counter()
-    result = original_fn(*args, **kwargs)   # Call original function
-    print(f"Elapsed {time.perf_counter() - start:.3f}s")
-    return result
-
-# 2. Cache short-circuit (may skip calling the original function)
-def cache_hit(original_fn, *args, **kwargs):
-    cached = cache.get(args)
-    if cached is not None:
-        return cached              # Skip original_fn, return cached result
     result = original_fn(*args, **kwargs)
-    cache.set(args, result)
+    print(f"Elapsed: {time.perf_counter() - start:.3f}s")
     return result
 
-# 3. Retry on exception (may call the original function multiple times)
-def retry_on_error(original_fn, *args, **kwargs):
-    for i in range(3):
-        try:
-            return original_fn(*args, **kwargs)
-        except Exception:
-            if i == 2: raise
+HookRegistry.register(
+    "sglang.srt.managers.scheduler.Scheduler.get_next_batch_to_run",
+    my_timer,
+    HookType.AROUND,
+)
+
+# --- Decorator API ---
+from sglang.srt.plugins.hook_registry import sglang_hook, HookType
+
+@sglang_hook(
+    "sglang.srt.managers.scheduler.Scheduler.get_next_batch_to_run",
+    type=HookType.AROUND,
+)
+def my_timer(original_fn, *args, **kwargs):
+    start = time.perf_counter()
+    result = original_fn(*args, **kwargs)
+    print(f"Elapsed: {time.perf_counter() - start:.3f}s")
+    return result
 ```
+
+### Hook Target Resolution
+
+Target paths use fully-qualified dotted notation. Both formats are supported:
+
+- **Dotted**: `sglang.srt.managers.scheduler.Scheduler.__init__`
+- **Entry-points style**: `sglang.srt.managers.scheduler:Scheduler.__init__` (colon treated as dot)
+
+### Common Hook Targets
+
+| Target | Description |
+|---|---|
+| `sglang.srt.server_args.ServerArgs.add_cli_args` | Add custom CLI arguments |
+| `sglang.srt.server_args.ServerArgs.__post_init__` | Modify ServerArgs after parsing |
+| `sglang.srt.server_args.ServerArgs.check_server_args` | Add/relax validation |
+| `sglang.srt.managers.scheduler.Scheduler.__init__` | Custom scheduler state |
+| `sglang.srt.managers.scheduler.Scheduler.get_next_batch_to_run` | Custom scheduling policy |
+| `sglang.srt.managers.scheduler.Scheduler.run_batch` | Profiling / inspection |
+| `sglang.srt.managers.scheduler.Scheduler.process_batch_result` | Custom metrics |
+| `sglang.srt.managers.tp_worker.TpModelWorker.__init__` | Custom worker state |
+| `sglang.srt.managers.tp_worker.TpModelWorker.forward_batch_generation` | Forward pass wrapping |
 
 ### ClassReplacer
 
-Used to replace entire classes (rather than individual functions):
+For replacing entire classes (rather than individual methods), use `ClassReplacer`:
 
 ```python
 from sglang.srt.plugins.class_replacer import ClassReplacer
 
+# In your plugin's register() function:
 ClassReplacer.register(
-    "sglang.srt.managers.scheduler.Scheduler",         # Original class
-    "my_plugin.custom_scheduler.EnhancedScheduler"      # Replacement class
+    "sglang.srt.managers.scheduler.Scheduler",         # original class
+    "my_plugin.custom_scheduler.EnhancedScheduler",     # replacement class
 )
+
+# In engine code (factory methods):
+SchedulerCls = ClassReplacer.maybe_replace(Scheduler)
+scheduler = SchedulerCls(...)
 ```
+
+---
+
+## File Reference
+
+| File | Description |
+|---|---|
+| `sglang/srt/platforms/device_mixin.py` | `PlatformEnum` + `DeviceMixin` base class |
+| `sglang/srt/platforms/interface.py` | `SRTPlatform` base class (extends DeviceMixin) |
+| `sglang/srt/platforms/__init__.py` | `current_platform` lazy singleton + discovery logic |
+| `sglang/srt/plugins/__init__.py` | `load_plugins()` + `load_plugins_by_group()` |
+| `sglang/srt/plugins/hook_registry.py` | `HookRegistry`, `HookType`, `sglang_hook` decorator, `resolve_obj()` |
+| `sglang/srt/plugins/class_replacer.py` | `ClassReplacer` for whole-class replacement |

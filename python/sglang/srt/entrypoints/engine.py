@@ -649,11 +649,9 @@ class Engine(EngineScoreMixin, EngineBase):
         _set_envs_and_config(server_args)
 
         # Load plugins and apply hooks before server args validation.
-        from sglang.srt.plugins import load_general_plugins
-        from sglang.srt.plugins.hook_registry import HookRegistry
+        from sglang.srt.plugins import load_plugins
 
-        load_general_plugins()
-        HookRegistry.apply_hooks()
+        load_plugins()
 
         server_args.check_server_args()
         _set_gc(server_args)
