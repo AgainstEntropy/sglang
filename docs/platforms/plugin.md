@@ -297,7 +297,9 @@ sglang serve --model-path <model> [options]
 | **BEFORE** | `fn(*args, **kwargs) -> (args, kwargs) \| None` | Runs before the original. Return `None` to keep args unchanged, or `(args, kwargs)` to modify. |
 | **AFTER** | `fn(result, *args, **kwargs) -> new_result \| None` | Runs after the original. Return `None` to keep result, or a new value to replace. |
 | **AROUND** | `fn(original_fn, *args, **kwargs) -> result` | Wraps the original. You must call `original_fn` yourself. Full control over execution. |
-| **REPLACE** | `fn(*args, **kwargs) -> result` | Completely replaces the original function. |
+| **REPLACE** | `fn(*args, **kwargs) -> result` or `class` | Replace the original function or class entirely. For class targets, pass a replacement class directly — it is substituted via `setattr` preserving `isinstance()`/`issubclass()` semantics. |
+
+> **Note**: Only `REPLACE` accepts a class as the hook. Passing a class to `BEFORE`/`AFTER`/`AROUND` raises `TypeError` at registration time.
 
 ### Registration API
 
@@ -320,9 +322,9 @@ HookRegistry.register(
 )
 
 # --- Decorator API ---
-from sglang.srt.plugins.hook_registry import sglang_hook, HookType
+from sglang.srt.plugins.hook_registry import plugin_hook, HookType
 
-@sglang_hook(
+@plugin_hook(
     "sglang.srt.managers.scheduler.Scheduler.get_next_batch_to_run",
     type=HookType.AROUND,
 )
@@ -331,6 +333,19 @@ def my_timer(original_fn, *args, **kwargs):
     result = original_fn(*args, **kwargs)
     print(f"Elapsed: {time.perf_counter() - start:.3f}s")
     return result
+
+# --- Class replacement (REPLACE) ---
+from sglang.srt.plugins.hook_registry import plugin_hook, HookType
+from sglang.srt.managers.scheduler import Scheduler
+
+@plugin_hook(
+    "sglang.srt.managers.scheduler.Scheduler",
+    type=HookType.REPLACE,
+)
+class MyScheduler(Scheduler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        print("Enhanced scheduler initialized!")
 ```
 
 ### Hook Target Resolution
@@ -354,24 +369,6 @@ Target paths use fully-qualified dotted notation. Both formats are supported:
 | `sglang.srt.managers.tp_worker.TpModelWorker.__init__` | Custom worker state |
 | `sglang.srt.managers.tp_worker.TpModelWorker.forward_batch_generation` | Forward pass wrapping |
 
-### ClassReplacer
-
-For replacing entire classes (rather than individual methods), use `ClassReplacer`:
-
-```python
-from sglang.srt.plugins.class_replacer import ClassReplacer
-
-# In your plugin's register() function:
-ClassReplacer.register(
-    "sglang.srt.managers.scheduler.Scheduler",         # original class
-    "my_plugin.custom_scheduler.EnhancedScheduler",     # replacement class
-)
-
-# In engine code (factory methods):
-SchedulerCls = ClassReplacer.maybe_replace(Scheduler)
-scheduler = SchedulerCls(...)
-```
-
 ---
 
 ## File Reference
@@ -382,5 +379,4 @@ scheduler = SchedulerCls(...)
 | `sglang/srt/platforms/interface.py` | `SRTPlatform` base class (extends DeviceMixin) |
 | `sglang/srt/platforms/__init__.py` | `current_platform` lazy singleton + discovery logic |
 | `sglang/srt/plugins/__init__.py` | `load_plugins()` + `load_plugins_by_group()` |
-| `sglang/srt/plugins/hook_registry.py` | `HookRegistry`, `HookType`, `sglang_hook` decorator, `resolve_obj()` |
-| `sglang/srt/plugins/class_replacer.py` | `ClassReplacer` for whole-class replacement |
+| `sglang/srt/plugins/hook_registry.py` | `HookRegistry`, `HookType`, `plugin_hook` decorator, `resolve_obj()` |

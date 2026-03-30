@@ -3,7 +3,7 @@ SGLang Unified Plugin Framework.
 
 Supports two types of plugins via setuptools entry_points:
 1. Hardware Platform Plugins (sglang.platform_plugins) - register custom hardware platforms
-2. General Function Plugins (sglang.plugins) - inject hooks, replace classes, etc.
+2. General Plugins (sglang.plugins) - inject hooks into functions/methods, replace classes, etc.
 
 Plugins are discovered automatically when installed via pip. Use the SGLANG_PLUGINS
 environment variable (comma-separated) to restrict which plugins are loaded.

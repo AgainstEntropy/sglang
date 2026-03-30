@@ -1,9 +1,9 @@
 """
-Function-level hook registry for SGLang plugins.
+Hook registry for SGLang plugins.
 
 Provides before/after/around/replace hooks that can be applied to any
-function or method in the sglang codebase. Hooks are registered during
-plugin loading and applied before the engine starts.
+function, method, or class in the sglang codebase. Hooks are registered
+during plugin loading and applied before the engine starts.
 
 Usage:
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
@@ -31,17 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 class HookType(Enum):
-    """Types of hooks that can be applied to functions."""
+    """Types of hooks that can be applied to functions or classes."""
 
     BEFORE = "before"  # Execute before original; can modify args
     AFTER = "after"  # Execute after original; can modify return value
     AROUND = "around"  # Wrap original; full control over execution
-    REPLACE = "replace"  # Completely replace the original function
+    REPLACE = "replace"  # Replace the original function or class entirely
 
 
 class HookRegistry:
     """
-    Global registry for function/method hooks.
+    Global registry for function/method/class hooks.
 
     Thread safety: All registration should happen during load_plugins()
     phase (single-threaded). apply_hooks() should be called once before the
@@ -55,23 +55,34 @@ class HookRegistry:
     def register(
         cls,
         target: str,
-        hook_fn: Callable,
+        hook: Callable,
         hook_type: HookType = HookType.AFTER,
     ):
         """
-        Register a hook on a target function.
+        Register a hook on a target function, method, or class.
 
         Args:
-            target: Fully-qualified dotted path to the target function/method.
+            target: Fully-qualified dotted path to the target.
                     e.g. "sglang.srt.managers.scheduler.Scheduler.schedule"
-            hook_fn: The hook function. Signature depends on hook_type:
+                    or   "sglang.srt.managers.scheduler.Scheduler" (class)
+            hook: The hook callable (function or class). Signature depends on hook_type:
                 - BEFORE:  fn(*args, **kwargs) -> (args, kwargs) or None
                 - AFTER:   fn(result, *args, **kwargs) -> new_result or None
                 - AROUND:  fn(original_fn, *args, **kwargs) -> result
-                - REPLACE: fn(*args, **kwargs) -> result
+                - REPLACE: fn(*args, **kwargs) -> result   (function replacement)
+                           MyClass                         (class replacement)
             hook_type: Type of hook (default: AFTER).
+
+        Raises:
+            TypeError: If a class is passed with a hook_type other than REPLACE.
         """
-        cls._hooks[target].append((hook_type, hook_fn))
+        if isinstance(hook, type) and hook_type != HookType.REPLACE:
+            raise TypeError(
+                f"Class {hook.__name__} can only be used with HookType.REPLACE, "
+                f"got HookType.{hook_type.name}. "
+                f"Use a function for BEFORE/AFTER/AROUND hooks."
+            )
+        cls._hooks[target].append((hook_type, hook))
         logger.debug(
             "Registered %s hook on %s",
             hook_type.value,
@@ -81,7 +92,7 @@ class HookRegistry:
     @classmethod
     def apply_hooks(cls):
         """
-        Apply all registered hooks to their target functions.
+        Apply all registered hooks to their target functions/classes.
 
         This performs the actual monkey-patching. Should be called once after
         all plugins have been loaded and before the engine starts.
@@ -104,12 +115,28 @@ class HookRegistry:
 
         obj_path, attr_name = parts
         obj = resolve_obj(obj_path)
-        original_fn = getattr(obj, attr_name)
+        original = getattr(obj, attr_name)
+
+        # Guard: if the target is a class, only REPLACE is safe. Wrapping a
+        # class in a function would break isinstance/issubclass/inheritance.
+        if isinstance(original, type):
+            bad = [ht for ht, _ in hooks if ht != HookType.REPLACE]
+            if bad:
+                raise TypeError(
+                    f"Target '{target}' is a class. Only HookType.REPLACE is "
+                    f"allowed for class targets (got {bad[0].value}). "
+                    f"To hook a method, use '{target}.<method_name>' instead."
+                )
 
         # Build the wrapper chain
-        wrapped = original_fn
-        for hook_type, hook_fn in hooks:
-            wrapped = _wrap_fn(wrapped, hook_fn, hook_type)
+        wrapped = original
+        for hook_type, hook in hooks:
+            if isinstance(hook, type) and hook_type == HookType.REPLACE:
+                # Class replacement: direct substitution to preserve type identity.
+                # This keeps isinstance(), issubclass(), and inheritance working.
+                wrapped = hook
+            else:
+                wrapped = _wrap_fn(wrapped, hook, hook_type)
 
         setattr(obj, attr_name, wrapped)
         logger.info("Applied %d hook(s) to %s", len(hooks), target)
@@ -149,14 +176,14 @@ def resolve_obj(qualname: str):
 
 
 def _wrap_fn(
-    original_fn: Callable, hook_fn: Callable, hook_type: HookType
+    original_fn: Callable, hook: Callable, hook_type: HookType
 ) -> Callable:
     """Create a wrapper function based on the hook type."""
     if hook_type == HookType.REPLACE:
 
         @functools.wraps(original_fn)
         def wrapper(*args, **kwargs):
-            return hook_fn(*args, **kwargs)
+            return hook(*args, **kwargs)
 
         wrapper.__wrapped__ = original_fn
         return wrapper
@@ -165,7 +192,7 @@ def _wrap_fn(
 
         @functools.wraps(original_fn)
         def wrapper(*args, **kwargs):
-            result = hook_fn(*args, **kwargs)
+            result = hook(*args, **kwargs)
             if result is not None:
                 args, kwargs = result
             return original_fn(*args, **kwargs)
@@ -178,7 +205,7 @@ def _wrap_fn(
         @functools.wraps(original_fn)
         def wrapper(*args, **kwargs):
             result = original_fn(*args, **kwargs)
-            modified = hook_fn(result, *args, **kwargs)
+            modified = hook(result, *args, **kwargs)
             return modified if modified is not None else result
 
         wrapper.__wrapped__ = original_fn
@@ -188,7 +215,7 @@ def _wrap_fn(
 
         @functools.wraps(original_fn)
         def wrapper(*args, **kwargs):
-            return hook_fn(original_fn, *args, **kwargs)
+            return hook(original_fn, *args, **kwargs)
 
         wrapper.__wrapped__ = original_fn
         return wrapper
@@ -197,15 +224,16 @@ def _wrap_fn(
         raise ValueError(f"Unknown hook type: {hook_type}")
 
 
-def sglang_hook(
+def plugin_hook(
     target: str,
     type: HookType = HookType.AFTER,
 ) -> Callable:
-    """Decorator that registers a function as a hook on *target*.
+    """Decorator that registers a function or class as a hook on *target*.
 
     Usage::
 
-        @sglang_hook("sglang.srt.managers.scheduler.Scheduler.schedule",
+        # Function hook (AROUND)
+        @plugin_hook("sglang.srt.managers.scheduler.Scheduler.schedule",
                       type=HookType.AROUND)
         def my_timer(original_fn, *args, **kwargs):
             start = time.perf_counter()
@@ -213,12 +241,18 @@ def sglang_hook(
             print(f"Elapsed: {time.perf_counter() - start:.3f}s")
             return result
 
-    The decorated function is returned unchanged so it can still be
-    called directly if needed.
+        # Class replacement (REPLACE)
+        @plugin_hook("sglang.srt.managers.scheduler.Scheduler",
+                      type=HookType.REPLACE)
+        class MyScheduler(Scheduler):
+            ...
+
+    The decorated function/class is returned unchanged so it can still be
+    used directly if needed.
     """
 
-    def decorator(fn: Callable) -> Callable:
-        HookRegistry.register(target, fn, type)
-        return fn
+    def decorator(hook: Callable) -> Callable:
+        HookRegistry.register(target, hook, type)
+        return hook
 
     return decorator
