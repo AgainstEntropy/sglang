@@ -1133,11 +1133,11 @@ class ServerArgs:
         # 6. Non-CUDA hardware (AMD, NPU, CPU, MPS, XPU, etc.)
         if is_hip() or is_npu() or is_cpu() or is_mps() or is_xpu():
             self.disable_piecewise_cuda_graph = True
-        # 6b. OOT platforms that don't support CUDA graph
+        # 6b. OOT platforms that don't support piecewise cuda graph
         from sglang.srt.platforms import current_platform
-
-        if current_platform.is_out_of_tree() and not current_platform.support_cuda_graph():
-            self.disable_piecewise_cuda_graph = True
+        if current_platform.is_out_of_tree():
+            if not current_platform.support_piecewise_cuda_graph():
+                self.disable_piecewise_cuda_graph = True
         # 7. MoE A2A backend
         if self.moe_a2a_backend != "none":
             self.disable_piecewise_cuda_graph = True

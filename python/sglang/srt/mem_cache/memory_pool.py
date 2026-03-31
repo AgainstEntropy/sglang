@@ -64,6 +64,8 @@ from sglang.srt.utils import (
 )
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
 
+from sglang.srt.platforms import current_platform
+
 if TYPE_CHECKING:
     from sglang.srt.managers.cache_controller import LayerDoneCounter
     from sglang.srt.managers.schedule_batch import Req
@@ -780,7 +782,6 @@ class MHATokenToKVPool(KVCache):
         self._create_buffers()
 
         self.device_module = torch.get_device_module(self.device)
-        from sglang.srt.platforms import current_platform
 
         _use_alt_stream = _is_cuda or current_platform.is_cuda_alike()
         self.alt_stream = (

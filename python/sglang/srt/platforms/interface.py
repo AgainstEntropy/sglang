@@ -98,7 +98,18 @@ class SRTPlatform(DeviceMixin):
         return True
 
     def support_cuda_graph(self) -> bool:
-        """Whether this platform supports CUDA graph capture."""
+        """Whether this platform supports device graph capture and replay.
+        Controls CUDA graph (CudaGraphRunner) for the decode path.
+        OOT platforms that support graph-style capture should return True.
+        """
+        return False
+
+    def support_piecewise_cuda_graph(self) -> bool:
+        """Whether this platform supports piecewise CUDA graph.
+
+        Controls PiecewiseCudaGraphRunner for the prefill/extend path
+        (torch.compile backend). 
+        """
         return False
 
     # ------------------------------------------------------------------

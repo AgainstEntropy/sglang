@@ -190,7 +190,8 @@ python -c "from sglang.srt.platforms import current_platform; print(current_plat
 
 | Method | Default | Description |
 |---|---|---|
-| `support_cuda_graph()` | `False` | Whether device graph capture is supported |
+| `support_cuda_graph()` | `False` | Whether device graph capture is supported (plain CUDA graph) |
+| `support_piecewise_cuda_graph()` | `False` | Whether piecewise CUDA graph (torch.compile backend) is supported |
 | `supports_fp8()` | `False` | Whether FP8 quantization is supported |
 | `is_pin_memory_available()` | `True` | Whether pinned memory is available |
 
@@ -379,4 +380,4 @@ Target paths use fully-qualified dotted notation. Both formats are supported:
 | `sglang/srt/platforms/interface.py` | `SRTPlatform` base class (extends DeviceMixin) |
 | `sglang/srt/platforms/__init__.py` | `current_platform` lazy singleton + discovery logic |
 | `sglang/srt/plugins/__init__.py` | `load_plugins()` + `load_plugins_by_group()` |
-| `sglang/srt/plugins/hook_registry.py` | `HookRegistry`, `HookType`, `plugin_hook` decorator, `resolve_obj()` |
+| `sglang/srt/plugins/hook_registry.py` | `HookRegistry`, `HookType`, `plugin_hook` decorator |

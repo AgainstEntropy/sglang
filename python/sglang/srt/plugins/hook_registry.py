@@ -23,6 +23,7 @@ Usage:
 
 import functools
 import logging
+import pkgutil
 from collections import defaultdict
 from collections.abc import Callable
 from enum import Enum
@@ -114,7 +115,7 @@ class HookRegistry:
             raise ValueError(f"Invalid target path (need at least module.attr): {target}")
 
         obj_path, attr_name = parts
-        obj = resolve_obj(obj_path)
+        obj = pkgutil.resolve_name(obj_path)
         original = getattr(obj, attr_name)
 
         # Guard: if the target is a class, only REPLACE is safe. Wrapping a
@@ -146,33 +147,6 @@ class HookRegistry:
         """Reset all hooks and patches. Primarily for testing."""
         cls._hooks.clear()
         cls._patched.clear()
-
-
-def resolve_obj(qualname: str):
-    """
-    Resolve a dotted qualname to a Python object.
-
-    Supports nested classes: "sglang.srt.managers.scheduler.Scheduler"
-    resolves to the Scheduler class in the scheduler module.
-
-    Also accepts entry_points-style "module.path:Attr" notation (colon
-    is treated as a dot separator).
-    """
-    import importlib
-
-    qualname = qualname.replace(":", ".")
-    parts = qualname.split(".")
-    # Try progressively shorter module paths
-    for i in range(len(parts), 0, -1):
-        module_path = ".".join(parts[:i])
-        try:
-            obj = importlib.import_module(module_path)
-            for attr in parts[i:]:
-                obj = getattr(obj, attr)
-            return obj
-        except (ImportError, AttributeError):
-            continue
-    raise ImportError(f"Cannot resolve object: {qualname}")
 
 
 def _wrap_fn(

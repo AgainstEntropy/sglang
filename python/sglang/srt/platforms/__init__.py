@@ -69,9 +69,9 @@ def _resolve_platform() -> SRTPlatform:
 
 def _load_platform_class(qualname: str) -> type:
     """Load an SRTPlatform subclass from its fully-qualified class name."""
-    from sglang.srt.plugins.hook_registry import resolve_obj
+    import pkgutil
 
-    cls = resolve_obj(qualname)
+    cls = pkgutil.resolve_name(qualname)
     if not isinstance(cls, type) or not issubclass(cls, SRTPlatform):
         raise TypeError(
             f"Expected an SRTPlatform subclass, got {type(cls)}: {qualname}"
