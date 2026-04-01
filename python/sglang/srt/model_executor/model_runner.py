@@ -702,6 +702,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         # Init routed experts capturer
         self.init_routed_experts_capturer()
 
+        # TODO: Refactor device-specific init branches into platform interface (separate PR).
         if self.device == "cuda" or self.device == "musa":
             self.init_cublas()
             self.init_attention_backend()

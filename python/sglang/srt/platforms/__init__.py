@@ -12,59 +12,100 @@ Usage:
 
 import logging
 import os
-from typing import Optional
 
 from sglang.srt.platforms.interface import SRTPlatform
 
 logger = logging.getLogger(__name__)
 
-_current_platform: Optional[SRTPlatform] = None
+_current_platform: SRTPlatform | None = None
 
 
 def _resolve_platform() -> SRTPlatform:
     """
     Discover and instantiate the active platform.
 
-    Discovery sources (in priority order):
-    1. SGLANG_PLATFORM env var (force a specific platform class, for dev/testing)
-    2. entry_points in group "sglang.platform_plugins" (OOT plugins)
-    3. Fallback: base SRTPlatform with safe defaults
+    Discovery flow:
+    1. Branch on SGLANG_PLATFORM:
+
+       SGLANG_PLATFORM set (front-loading filter):
+         - Enumerate entry_points without importing any plugin modules
+         - Only ep.load() + activate() the named plugin
+         - Other plugins are never imported (avoids pulling their dependencies)
+         - Plugin name not found → RuntimeError
+         - activate() returns None → RuntimeError (hardware unavailable)
+
+       SGLANG_PLATFORM unset (auto-discover):
+         - Import and activate all discovered plugins
+         - 0 activated → fallback base SRTPlatform
+         - 1 activated → use it
+         - N activated → RuntimeError (must set SGLANG_PLATFORM)
+
+       SGLANG_PLATFORM matches against entry_point names.
     """
-    # 1. Optional: Force a specific platform via env var
-    if forced := os.environ.get("SGLANG_PLATFORM"):
-        logger.info("SGLANG_PLATFORM override: %s", forced)
-        return _load_platform_class(forced)()
+    from importlib.metadata import entry_points as _entry_points
 
-    # 2. Discover OOT platform plugins via entry_points
-    from sglang.srt.plugins import PLATFORM_PLUGINS_GROUP, load_plugins_by_group
+    from sglang.srt.plugins import PLATFORM_PLUGINS_GROUP
 
-    oot_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
-    oot_platform_cls = None
-    oot_name = None
+    selected = os.environ.get("SGLANG_PLATFORM")
 
-    for name, plugin_fn in oot_plugins.items():
+    if selected:
+        # Front-loading filter: only import and activate the specified plugin.
+        # Other plugins' modules are never loaded — avoids pulling their deps.
+        discovered = _entry_points(group=PLATFORM_PLUGINS_GROUP)
+        ep_map = {ep.name: ep for ep in discovered}
+
+        if selected not in ep_map:
+            available = ", ".join(f"'{n}'" for n in ep_map) if ep_map else "none"
+            raise RuntimeError(
+                f"SGLANG_PLATFORM={selected!r} not found in discovered platform plugins "
+                f"(available: {available}). Install the plugin with 'pip install -e' "
+                f"to register its entry_points."
+            )
+
+        try:
+            plugin_fn = ep_map[selected].load()
+            result = plugin_fn()
+        except Exception:
+            logger.exception("Failed to activate platform plugin: %s", selected)
+            raise
+
+        if result is None:
+            raise RuntimeError(
+                f"Platform plugin {selected!r} is installed but activate() returned None "
+                f"(hardware not available on this machine?)."
+            )
+        logger.info("OOT platform plugin activated: %s -> %s", selected, result)
+        return _load_platform_class(result)()
+
+    # Auto-discover: import and activate all plugins, expect exactly one
+    from sglang.srt.plugins import load_plugins_by_group
+
+    all_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
+
+    activated: dict[str, str] = {}
+    for name, (plugin_fn, _dist) in all_plugins.items():
         try:
             result = plugin_fn()
             if result is not None:
-                if oot_platform_cls is not None:
-                    raise RuntimeError(
-                        f"Multiple OOT platform plugins activated: {oot_name!r} and {name!r}. "
-                        f"Set SGLANG_PLUGINS to select exactly one."
-                    )
-                oot_platform_cls = _load_platform_class(result)
-                oot_name = name
-                logger.info(
-                    "OOT platform plugin activated: %s -> %s", name, result
-                )
+                activated[name] = result
+                logger.info("OOT platform plugin activated: %s -> %s", name, result)
         except Exception:
             logger.exception("Failed to activate platform plugin: %s", name)
 
-    if oot_platform_cls is not None:
-        return oot_platform_cls()
+    if len(activated) == 0:
+        logger.warning("No platform detected. Using base SRTPlatform with defaults.")
+        return SRTPlatform()
 
-    # 3. Fallback: base SRTPlatform
-    logger.warning("No platform detected. Using base SRTPlatform with defaults.")
-    return SRTPlatform()
+    if len(activated) == 1:
+        name, qualname = next(iter(activated.items()))
+        return _load_platform_class(qualname)()
+
+    # Multiple activated without SGLANG_PLATFORM
+    names_str = ", ".join(f"'{n}'" for n in activated)
+    raise RuntimeError(
+        f"Multiple platform plugins activated: {names_str}. "
+        f"Set SGLANG_PLATFORM to select one."
+    )
 
 
 def _load_platform_class(qualname: str) -> type:

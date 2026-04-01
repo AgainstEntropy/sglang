@@ -15,7 +15,7 @@ The framework provides two plugin types, both discovered via Python's standard `
 
 - **Non-intrusive**: Existing CUDA/ROCm/NPU/XPU code remains unchanged. OOT code paths are added alongside existing hardware-specific logic.
 - **Zero configuration**: Plugins are automatically discovered after `pip install`, no sglang code changes required.
-- **Environment variable control**: `SGLANG_PLUGINS` (comma-separated) controls which plugins to load. `SGLANG_PLATFORM` forces a specific platform class for dev/testing.
+- **Environment variable control**: `SGLANG_PLATFORM` selects or validates the active platform plugin; `SGLANG_PLUGINS` (comma-separated) controls which general plugins to load.
 
 ### Current Scope & Future Direction
 
@@ -44,17 +44,24 @@ Key design points:
 - All methods are **instance methods** (not classmethods), called through the `current_platform` singleton
 - Device operations and factory methods raise `NotImplementedError` by default (fail-fast)
 - Capability flags use safe conservative defaults (`False`/`pass`)
+- Methods are annotated `[Active]` (called by SGLang core) or `[Planned]` (reserved for future migration)
 
 ### Platform Discovery (`current_platform`)
 
 `current_platform` is a **lazy singleton** in `sglang.srt.platforms`. On first access it resolves the active platform through the following priority chain:
 
 ```
-1. SGLANG_PLATFORM env var         → Force a specific platform class (dev/testing)
-2. entry_points("sglang.platform_plugins")  → OOT plugin auto-discovery
-   - At most one OOT plugin can be active; otherwise RuntimeError
-   - SGLANG_PLUGINS env var filters which plugins are loaded
-3. Fallback                        → base SRTPlatform(UNSPECIFIED)
+entry_points("sglang.platform_plugins")  → Enumerate ALL plugins by name (metadata only)
+  │
+  ├─ SGLANG_PLATFORM set (front-loading filter):
+  │   ├─ Name not found in discovered → RuntimeError
+  │   ├─ activate() returns non-None  → load that platform
+  │   └─ activate() returns None      → RuntimeError (hardware unavailable)
+  │
+  └─ SGLANG_PLATFORM unset (auto-discover, activate all):
+      ├─ 0 activated → fallback base SRTPlatform
+      ├─ 1 activated → use it
+      └─ N activated → RuntimeError (must set SGLANG_PLATFORM)
 ```
 
 ### Plugin Loading Flow
@@ -72,9 +79,12 @@ Key design points:
 
 ```
 load_plugins()
-  ├── load_plugins_by_group("sglang.plugins")  → discover entry_points
-  ├── for each plugin: func()                  → side effects (register hooks, etc.)
-  └── HookRegistry.apply_hooks()               → monkey-patch targets
+  ├── _get_excluded_dists()                       → compute dists to skip (via SGLANG_PLATFORM)
+  ├── load_plugins_by_group("sglang.plugins",     → discover entry_points, filter by SGLANG_PLUGINS
+  │     excluded_dists=...)                          skip plugins from unselected platform packages
+  ├── for each plugin:                            → set _current_plugin_source context var
+  │     func()                                      side effects (register hooks with source tracking)
+  └── HookRegistry.apply_hooks()                  → monkey-patch targets
 ```
 
 ---
@@ -177,14 +187,35 @@ python -c "from sglang.srt.platforms import current_platform; print(current_plat
 
 #### Device Operations (from DeviceMixin)
 
-| Method | Default | Description |
-|---|---|---|
-| `set_device(device)` | `raise NotImplementedError` | Set the current device |
-| `get_device_name(device_id)` | `raise NotImplementedError` | Get human-readable device name |
-| `get_device_total_memory(device_id)` | `raise NotImplementedError` | Get total device memory in bytes |
-| `get_current_memory_usage(device)` | `raise NotImplementedError` | Get current peak memory usage in bytes |
-| `get_device_capability(device_id)` | `raise NotImplementedError` | Get device compute capability `(major, minor)` |
-| `get_torch_distributed_backend_str()` | `raise NotImplementedError` | Return distributed backend string (e.g. "nccl", "hccl") |
+> Methods annotated **[Active]** are called by SGLang core through `current_platform` — OOT implementations take effect immediately.
+> Methods annotated **[Planned]** are reserved interfaces — SGLang core still uses hardcoded calls (e.g. `torch.cuda.empty_cache()`). OOT implementations will NOT take effect until the core is migrated in a future PR.
+
+| Method | Default | Status | Description |
+|---|---|---|---|
+| `get_device(local_rank)` | `raise NotImplementedError` | Planned | Return `torch.device` for a given local rank |
+| `set_device(device)` | `raise NotImplementedError` | Planned | Set the current device |
+| `get_device_name(device_id)` | `raise NotImplementedError` | Planned | Get human-readable device name |
+| `get_device_uuid(device_id)` | `raise NotImplementedError` | Planned | Get unique device identifier |
+| `get_device_capability(device_id)` | `raise NotImplementedError` | Planned | Get `DeviceCapability(major, minor)`. None if N/A |
+| `empty_cache()` | `pass` | Planned | Release cached device memory |
+| `synchronize()` | `pass` | Planned | Synchronize device operations |
+| `get_device_total_memory(device_id)` | `raise NotImplementedError` | **Active** | Get total device memory in bytes |
+| `get_available_memory(device_id)` | `raise NotImplementedError` | Planned | Return `(free_bytes, total_bytes)` |
+| `get_current_memory_usage(device)` | `raise NotImplementedError` | **Active** | Get current peak memory usage in bytes |
+| `get_torch_distributed_backend_str()` | `raise NotImplementedError` | Planned | Distributed backend string (e.g. "nccl", "hccl") |
+| `get_communicator_class()` | `None` | Planned | Platform-specific communicator class |
+| `inference_mode()` | `torch.inference_mode(True)` | Planned | Return inference mode context manager |
+| `seed_everything(seed)` | Set random/np/torch seeds | Planned | Set random seeds for reproducibility |
+| `verify_quantization(quant)` | `pass` | Planned | Validate quantization method support |
+| `get_cpu_architecture()` | Auto-detect x86/arm | Planned | Detect CPU architecture (`CpuArchEnum`) |
+
+#### Types (from DeviceMixin)
+
+| Type | Description |
+|---|---|
+| `PlatformEnum` | Enumeration of platform types: CUDA, ROCM, CPU, XPU, MUSA, NPU, TPU, MPS, OOT, UNSPECIFIED |
+| `CpuArchEnum` | CPU architecture: X86, ARM, UNSPECIFIED |
+| `DeviceCapability` | `NamedTuple(major, minor)` with comparison support. Methods: `as_version_str()`, `to_int()` |
 
 #### Capability Flags (from SRTPlatform)
 
@@ -220,8 +251,8 @@ python -c "from sglang.srt.platforms import current_platform; print(current_plat
 
 | Variable | Description |
 |---|---|
-| `SGLANG_PLATFORM` | Force a specific platform class by fully-qualified name. Bypasses entry_points discovery. Supports both dot notation (`a.b.MyClass`) and entry_points notation (`a.b:MyClass`). |
-| `SGLANG_PLUGINS` | Comma-separated whitelist of plugin names to load. Applies to both platform and general plugins. |
+| `SGLANG_PLATFORM` | Select the platform plugin by entry_point name (e.g. `kunlun`, `demo_cuda`). When set, **only** the named plugin's `activate()` is called (front-loading filter) — other plugins are not touched. Additionally, general plugins (`sglang.plugins`) from unselected platform packages are automatically skipped to avoid importing their dependencies. Required when multiple plugins would activate. Errors if the name is not found or if the plugin's hardware is unavailable. |
+| `SGLANG_PLUGINS` | Comma-separated whitelist of general plugin names to load (group: `sglang.plugins`). If unset, all discovered general plugins are loaded. |
 
 ---
 

@@ -21,14 +21,38 @@ Usage:
     )
 """
 
+import contextvars
 import functools
 import logging
 import pkgutil
 from collections import defaultdict
 from collections.abc import Callable
 from enum import Enum
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
+
+
+class HookSource(NamedTuple):
+    """Identifies which plugin registered a hook."""
+
+    plugin_name: str  # entry_point name, e.g. "xpu_hooks"
+    dist_name: str | None  # distribution name, e.g. "sglang_xpu_platform"
+
+
+# Set by load_plugins() around each plugin's func() call, read by register().
+_current_plugin_source: contextvars.ContextVar[HookSource | None] = (
+    contextvars.ContextVar("_current_plugin_source", default=None)
+)
+
+
+def _format_source(source: HookSource | None) -> str:
+    """Format source info for log messages."""
+    if source is None:
+        return "unknown"
+    if source.dist_name:
+        return f"plugin={source.plugin_name}, dist={source.dist_name}"
+    return f"plugin={source.plugin_name}"
 
 
 class HookType(Enum):
@@ -49,7 +73,9 @@ class HookRegistry:
     engine starts serving requests.
     """
 
-    _hooks: dict[str, list[tuple[HookType, Callable]]] = defaultdict(list)
+    _hooks: dict[str, list[tuple[HookType, Callable, HookSource | None]]] = defaultdict(
+        list
+    )
     _patched: set[str] = set()
 
     @classmethod
@@ -58,6 +84,8 @@ class HookRegistry:
         target: str,
         hook: Callable,
         hook_type: HookType = HookType.AFTER,
+        *,
+        source: HookSource | None = None,
     ):
         """
         Register a hook on a target function, method, or class.
@@ -73,6 +101,8 @@ class HookRegistry:
                 - REPLACE: fn(*args, **kwargs) -> result   (function replacement)
                            MyClass                         (class replacement)
             hook_type: Type of hook (default: AFTER).
+            source: Optional source info. If None, auto-read from context var
+                set by ``load_plugins()``.
 
         Raises:
             TypeError: If a class is passed with a hook_type other than REPLACE.
@@ -83,11 +113,33 @@ class HookRegistry:
                 f"got HookType.{hook_type.name}. "
                 f"Use a function for BEFORE/AFTER/AROUND hooks."
             )
-        cls._hooks[target].append((hook_type, hook))
+        resolved_source = source or _current_plugin_source.get()
+        # Warn on duplicate REPLACE for the same target
+        if hook_type == HookType.REPLACE:
+            existing_replace = [
+                (h, src)
+                for ht, h, src in cls._hooks[target]
+                if ht == HookType.REPLACE
+            ]
+            if existing_replace:
+                prev, prev_src = existing_replace[-1]
+                prev_name = getattr(prev, "__qualname__", None) or repr(prev)
+                new_name = getattr(hook, "__qualname__", None) or repr(hook)
+                logger.warning(
+                    "Multiple REPLACE hooks on '%s': previous (%s [%s]) will be "
+                    "overridden by (%s [%s]). The last registered REPLACE takes effect.",
+                    target,
+                    prev_name,
+                    _format_source(prev_src),
+                    new_name,
+                    _format_source(resolved_source),
+                )
+        cls._hooks[target].append((hook_type, hook, resolved_source))
         logger.debug(
-            "Registered %s hook on %s",
+            "Registered %s hook on %s [%s]",
             hook_type.value,
             target,
+            _format_source(resolved_source),
         )
 
     @classmethod
@@ -121,7 +173,7 @@ class HookRegistry:
         # Guard: if the target is a class, only REPLACE is safe. Wrapping a
         # class in a function would break isinstance/issubclass/inheritance.
         if isinstance(original, type):
-            bad = [ht for ht, _ in hooks if ht != HookType.REPLACE]
+            bad = [ht for ht, _, _ in hooks if ht != HookType.REPLACE]
             if bad:
                 raise TypeError(
                     f"Target '{target}' is a class. Only HookType.REPLACE is "
@@ -129,9 +181,36 @@ class HookRegistry:
                     f"To hook a method, use '{target}.<method_name>' instead."
                 )
 
+        # Warn about risky hook combinations
+        hook_types = [ht for ht, _, _ in hooks]
+        around_count = hook_types.count(HookType.AROUND)
+        has_replace = HookType.REPLACE in hook_types
+        has_others = any(ht != HookType.REPLACE for ht in hook_types)
+
+        if around_count > 1:
+            around_sources = [
+                _format_source(src)
+                for ht, _, src in hooks
+                if ht == HookType.AROUND
+            ]
+            logger.warning(
+                "Multiple AROUND hooks on '%s' (%d hooks, from: %s). If any AROUND hook "
+                "skips calling original_fn, inner hooks will be bypassed.",
+                target,
+                around_count,
+                ", ".join(around_sources),
+            )
+        if has_replace and has_others:
+            logger.warning(
+                "Target '%s' has both REPLACE and %s hooks. "
+                "Behavior depends on registration order and may be unexpected.",
+                target,
+                ", ".join(sorted({ht.value for ht in hook_types if ht != HookType.REPLACE})),
+            )
+
         # Build the wrapper chain
         wrapped = original
-        for hook_type, hook in hooks:
+        for hook_type, hook, _src in hooks:
             if isinstance(hook, type) and hook_type == HookType.REPLACE:
                 # Class replacement: direct substitution to preserve type identity.
                 # This keeps isinstance(), issubclass(), and inheritance working.
@@ -140,7 +219,10 @@ class HookRegistry:
                 wrapped = _wrap_fn(wrapped, hook, hook_type)
 
         setattr(obj, attr_name, wrapped)
-        logger.info("Applied %d hook(s) to %s", len(hooks), target)
+        sources = sorted({_format_source(src) for _, _, src in hooks})
+        logger.info(
+            "Applied %d hook(s) to %s (from: %s)", len(hooks), target, ", ".join(sources)
+        )
 
     @classmethod
     def reset(cls):
