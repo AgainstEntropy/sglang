@@ -21,6 +21,9 @@ RUN cp -r /root/.oh-my-zsh /home/devuser/.oh-my-zsh && \
     sed -i 's|/root/.oh-my-zsh|/home/devuser/.oh-my-zsh|g' /home/devuser/.zshrc && \
     chown -R devuser:devuser /home/devuser/
 
+# Install Python dev tools (must run as root before USER switch to avoid permission issues)
+RUN pip install nvitop
+
 # Set workspace directory and ownership
 WORKDIR /sgl-workspace/sglang
 RUN chown -R devuser:devuser /sgl-workspace
