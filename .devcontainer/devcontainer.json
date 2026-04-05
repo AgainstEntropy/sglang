@@ -12,15 +12,24 @@
                 "charliermarsh.ruff",
                 // Rust development
                 "rust-lang.rust-analyzer",
-                "tamasfe.even-better-toml"
+                "tamasfe.even-better-toml",
+                // My extensions
+                "anthropic.claude-code",
+                "donjayamanne.githistory",
+                "waderyan.gitblame",
+                "shd101wyy.markdown-preview-enhanced",
+                "ms-toolsai.jupyter"
             ]
         }
     },
     "forwardPorts": [],
     "runArgs": [
         "--gpus",
-        "all"
+        "all",
+        "--name",
+        "yihao-sglang-dev"
     ],
+    "postCreateCommand": "git config --global user.name 'Yihao Wang' && git config --global user.email '42559837+AgainstEntropy@users.noreply.github.com'",
     // The two lines below ensures that your local changes in the sglang
     // repo is automatically synced to the sglang pip package installed
     // in the dev docker container. You can remove / comment out these
