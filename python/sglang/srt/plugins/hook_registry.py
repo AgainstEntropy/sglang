@@ -149,8 +149,14 @@ class HookRegistry:
 
         This performs the actual monkey-patching. Should be called once after
         all plugins have been loaded and before the engine starts.
+
+        Targets with class REPLACE hooks are applied first, so that
+        subsequent method-level hooks (AROUND, BEFORE, AFTER) on child
+        attributes resolve against the *replaced* class rather than the
+        original.
         """
-        for target, hooks in cls._hooks.items():
+        sorted_items = sorted(cls._hooks.items(), key=cls._target_sort_key)
+        for target, hooks in sorted_items:
             if target in cls._patched:
                 continue
             try:
@@ -158,6 +164,20 @@ class HookRegistry:
                 cls._patched.add(target)
             except Exception:
                 logger.exception("Failed to apply hooks to %s", target)
+
+    @staticmethod
+    def _target_sort_key(item):
+        """Sort key: class REPLACE targets (tier 0) before all others (tier 1).
+
+        This ensures that when a class is replaced, subsequent method-level
+        hooks on ``ClassName.method`` resolve against the replacement class.
+        """
+        _target, hooks = item
+        has_class_replace = any(
+            isinstance(h, type) and ht == HookType.REPLACE
+            for ht, h, _ in hooks
+        )
+        return (0 if has_class_replace else 1, _target)
 
     @classmethod
     def _apply_target(cls, target: str, hooks: list):
@@ -169,6 +189,28 @@ class HookRegistry:
         obj_path, attr_name = parts
         obj = pkgutil.resolve_name(obj_path)
         original = getattr(obj, attr_name)
+
+        # Cross-target conflict detection: if the parent object is a class
+        # that was already class-REPLACE'd, and the replacement class defines
+        # its own version of this method, a method REPLACE here will silently
+        # override the replacement class's implementation.
+        if isinstance(obj, type) and obj_path in cls._patched:
+            has_method_replace = any(ht == HookType.REPLACE for ht, _, _ in hooks)
+            if has_method_replace and attr_name in obj.__dict__:
+                replace_sources = [
+                    _format_source(src)
+                    for ht, _, src in hooks
+                    if ht == HookType.REPLACE
+                ]
+                logger.warning(
+                    "Method REPLACE on '%s' will override the class REPLACE's "
+                    "own implementation of '%s'. If this is unintended, remove "
+                    "the method REPLACE and modify the replacement class "
+                    "directly, or use AROUND to wrap it. (from: %s)",
+                    target,
+                    attr_name,
+                    ", ".join(replace_sources),
+                )
 
         # Guard: if the target is a class, only REPLACE is safe. Wrapping a
         # class in a function would break isinstance/issubclass/inheritance.
@@ -201,16 +243,22 @@ class HookRegistry:
                 ", ".join(around_sources),
             )
         if has_replace and has_others:
-            logger.warning(
+            logger.info(
                 "Target '%s' has both REPLACE and %s hooks. "
-                "Behavior depends on registration order and may be unexpected.",
+                "REPLACE will be applied first, then wrapped by other hooks.",
                 target,
                 ", ".join(sorted({ht.value for ht in hook_types if ht != HookType.REPLACE})),
             )
 
-        # Build the wrapper chain
+        # Build the wrapper chain.
+        # Sort: REPLACE hooks first (stable sort preserves registration order
+        # within the same type). This ensures AROUND/BEFORE/AFTER always wrap
+        # the replaced function, regardless of registration order.
+        sorted_hooks = sorted(
+            hooks, key=lambda h: (0 if h[0] == HookType.REPLACE else 1)
+        )
         wrapped = original
-        for hook_type, hook, _src in hooks:
+        for hook_type, hook, _src in sorted_hooks:
             if isinstance(hook, type) and hook_type == HookType.REPLACE:
                 # Class replacement: direct substitution to preserve type identity.
                 # This keeps isinstance(), issubclass(), and inheritance working.
