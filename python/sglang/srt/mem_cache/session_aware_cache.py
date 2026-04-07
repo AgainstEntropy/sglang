@@ -174,6 +174,13 @@ class SessionAwareCache(BasePrefixCache):
         if not _is_streaming(req):
             return self.inner.match_prefix(params)
 
+        from sglang.srt.managers.schedule_batch import FINISH_ABORT
+
+        if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
+            req.finished_reason, FINISH_ABORT
+        ):
+            return self.inner.match_prefix(params)
+
         session_id = req.session.session_id
         slot = self.slots.get(session_id)
         if slot is None or slot.req_pool_idx is None:
@@ -181,10 +188,15 @@ class SessionAwareCache(BasePrefixCache):
 
         slot.restore_to_req(req)
 
+        max_reuse = req.kv_committed_len
+        if req.kv_reuse_len is not None and req.kv_reuse_len < max_reuse:
+            self._truncate_slot(slot, req, req.kv_reuse_len)
+            max_reuse = req.kv_reuse_len
+
         # logprob_start_len is already forced to -1 for streaming sessions
         # (in Req.init_next_round_input), so the prefix key is not truncated
         # and we can directly reuse the committed KV length.
-        prefix_len = min(req.kv_committed_len, max(len(params.key.token_ids) - 1, 0))
+        prefix_len = min(max_reuse, max(len(params.key.token_ids) - 1, 0))
         device_indices = self.req_to_token_pool.req_to_token[
             req.req_pool_idx, :prefix_len
         ].to(dtype=torch.int64)
@@ -199,6 +211,14 @@ class SessionAwareCache(BasePrefixCache):
     def cache_finished_req(self, req: Req, is_insert: bool = True, **kwargs):
         if not _is_streaming(req):
             return self.inner.cache_finished_req(req, is_insert=is_insert, **kwargs)
+
+        from sglang.srt.managers.schedule_batch import FINISH_ABORT
+
+        if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
+            req.finished_reason, FINISH_ABORT
+        ):
+            self.inner.cache_finished_req(req, is_insert=is_insert, **kwargs)
+            return
 
         session_id = req.session.session_id
         slot = self.slots.get(session_id)
@@ -240,6 +260,25 @@ class SessionAwareCache(BasePrefixCache):
         if isinstance(node, _VirtualNode):
             return DecLockRefResult()
         return self.inner.dec_lock_ref(node, params)
+
+    def _truncate_slot(self, slot: SessionSlot, req: "Req", new_len: int):
+        """Truncate KV state to new_len, freeing excess entries.
+
+        Tokens below cache_protected_len belong to the radix tree and must
+        not be freed here (they are released via dec_lock_ref on session close).
+        """
+        old_allocated = slot.kv_allocated_len
+        free_start = max(new_len, slot.cache_protected_len)
+        if free_start < old_allocated:
+            excess = self.req_to_token_pool.req_to_token[
+                req.req_pool_idx, free_start:old_allocated
+            ]
+            self.token_to_kv_pool_allocator.free(excess)
+        new_allocated = max(new_len, slot.cache_protected_len)
+        slot.kv_committed_len = new_len
+        slot.kv_allocated_len = new_allocated
+        req.kv_committed_len = new_len
+        req.kv_allocated_len = new_allocated
 
     # -- Session lifecycle --
 
