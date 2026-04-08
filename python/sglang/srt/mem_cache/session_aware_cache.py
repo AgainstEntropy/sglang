@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
 
+from sglang.srt.managers.schedule_batch import FINISH_ABORT
 from sglang.srt.mem_cache.base_prefix_cache import (
     BasePrefixCache,
     DecLockRefParams,
@@ -174,8 +175,6 @@ class SessionAwareCache(BasePrefixCache):
         if not _is_streaming(req):
             return self.inner.match_prefix(params)
 
-        from sglang.srt.managers.schedule_batch import FINISH_ABORT
-
         if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
             req.finished_reason, FINISH_ABORT
         ):
@@ -211,8 +210,6 @@ class SessionAwareCache(BasePrefixCache):
     def cache_finished_req(self, req: Req, is_insert: bool = True, **kwargs):
         if not _is_streaming(req):
             return self.inner.cache_finished_req(req, is_insert=is_insert, **kwargs)
-
-        from sglang.srt.managers.schedule_batch import FINISH_ABORT
 
         if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
             req.finished_reason, FINISH_ABORT
