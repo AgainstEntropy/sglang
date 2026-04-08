@@ -119,22 +119,19 @@ class Session:
         return rid == latest_rid
 
     def _find_turn_record(self, rid: str) -> Optional[TurnRecord]:
-        for record in self.turn_history:
-            if record.rid == rid:
-                return record
-        return None
+        return self.turn_records.get(rid)
 
     def _save_turn_record(self, req: Req):
-        output_ids = req.output_ids[: req.sampling_params.max_new_tokens]
+        output_ids = list(req.output_ids)
         kv_end = len(req.origin_input_ids) + len(output_ids)
-        self.turn_history.append(
-            TurnRecord(
-                rid=req.rid,
-                origin_input_ids=list(req.origin_input_ids),
-                output_ids=list(output_ids),
-                kv_end_pos=kv_end,
-            )
+        record = TurnRecord(
+            rid=req.rid,
+            origin_input_ids=list(req.origin_input_ids),
+            output_ids=output_ids,
+            kv_end_pos=kv_end,
         )
+        self.turn_order.append(record.rid)
+        self.turn_records[record.rid] = record
 
     @staticmethod
     def _trim_bos(req: TokenizedGenerateReqInput, tokenizer):
@@ -230,8 +227,10 @@ class Session:
             input_ids = base_ids + req.input_ids
             input_ids_unpadded = base_ids + req.input_ids
 
-            idx = self.turn_history.index(backtrack_target)
-            self.turn_history = self.turn_history[: idx + 1]
+            idx = self.turn_order.index(backtrack_target.rid)
+            for removed_rid in self.turn_order[idx + 1 :]:
+                del self.turn_records[removed_rid]
+            self.turn_order = self.turn_order[: idx + 1]
 
         elif last_req is not None:
             self._trim_bos(req, tokenizer)
