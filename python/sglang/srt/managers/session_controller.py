@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from sglang.srt.managers.io_struct import (
@@ -86,7 +86,6 @@ class TurnRecord:
     rid: str
     origin_input_ids: List[int]
     output_ids: List[int]
-    max_new_tokens: int
     kv_end_pos: int
 
 
@@ -111,7 +110,7 @@ class Session:
             return False
         return time.monotonic() - self.last_active_time > self.timeout
 
-    def _is_latest_streaming_rid(self, rid: str) -> bool:
+    def _is_current_streaming_rid(self, rid: str) -> bool:
         if not self.req_nodes:
             return False
         latest_rid = next(iter(self.req_nodes))
@@ -124,15 +123,13 @@ class Session:
         return None
 
     def _save_turn_record(self, req: Req):
-        max_new = req.sampling_params.max_new_tokens
-        output_ids = req.output_ids[:max_new]
+        output_ids = req.output_ids[: req.sampling_params.max_new_tokens]
         kv_end = len(req.origin_input_ids) + len(output_ids)
         self.turn_history.append(
             TurnRecord(
                 rid=req.rid,
                 origin_input_ids=list(req.origin_input_ids),
                 output_ids=list(output_ids),
-                max_new_tokens=max_new,
                 kv_end_pos=kv_end,
             )
         )
@@ -156,8 +153,7 @@ class Session:
                                 "clamping to 0 after BOS strip"
                             )
                         item.offsets = [
-                            (max(0, s - 1), max(0, e - 1))
-                            for s, e in item.offsets
+                            (max(0, s - 1), max(0, e - 1)) for s, e in item.offsets
                         ]
 
     def create_req(
@@ -179,15 +175,13 @@ class Session:
         kv_reuse_len: Optional[int] = None
         if self.streaming:
             target_rid = session_params.rid
-            if target_rid is not None and not self._is_latest_streaming_rid(
+            if target_rid is not None and not self._is_current_streaming_rid(
                 target_rid
             ):
                 backtrack_target = self._find_turn_record(target_rid)
                 if backtrack_target is None:
                     abort = True
-                    abort_message = (
-                        f"Invalid rid for streaming session: {target_rid}"
-                    )
+                    abort_message = f"Invalid rid for streaming session: {target_rid}"
             if not abort and self.req_nodes:
                 assert len(self.req_nodes) == 1
                 _, last_req_node = self.req_nodes.popitem()
@@ -220,10 +214,7 @@ class Session:
 
         if self.streaming and backtrack_target is not None:
             self._trim_bos(req, tokenizer)
-            base_ids = (
-                backtrack_target.origin_input_ids
-                + backtrack_target.output_ids[: backtrack_target.max_new_tokens]
-            )
+            base_ids = backtrack_target.origin_input_ids + backtrack_target.output_ids
             kv_reuse_len = backtrack_target.kv_end_pos
 
             if session_params.drop_previous_output:
