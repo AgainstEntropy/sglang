@@ -6,8 +6,8 @@ All tests share a single server (DEFAULT_SMALL_MODEL) with streaming sessions
 and chunked prefill enabled.
 
 Usage:
-    python -m pytest test_streaming_backtrack.py -xvs
-    python -m unittest test_streaming_backtrack.TestStreamingBacktrack
+    python -m pytest test_streaming_session_backtrack.py -xvs
+    python -m unittest test_streaming_session_backtrack.TestStreamingSessionBacktrack
 """
 
 import time
@@ -180,7 +180,7 @@ class TestStreamingSessionBacktrack(CustomTestCase):
         # Backtrack to rid1 — this should invalidate rid2
         self._generate(" What about France?", session_params={"id": sid, "rid": rid1})
 
-        # rid2 should now be rejected
+        # rid2 should now be rejected with HTTP 400
         resp = requests.post(
             self.base_url + "/generate",
             json={
@@ -190,10 +190,10 @@ class TestStreamingSessionBacktrack(CustomTestCase):
             },
             timeout=120,
         )
-        self.assertNotEqual(
+        self.assertEqual(
             resp.status_code,
-            200,
-            "Request with invalidated rid should be rejected",
+            400,
+            "Request with invalidated rid should be rejected with 400",
         )
 
         self._close_session(sid)
@@ -212,12 +212,24 @@ class TestStreamingSessionBacktrack(CustomTestCase):
         self._close_session(sid)
         requests.post(self.base_url + "/flush_cache")
         time.sleep(3)
+
         health = requests.get(self.base_url + "/health")
         self.assertEqual(
             health.status_code,
             200,
             "Server unhealthy after repeated backtracks — likely a KV memory leak.",
         )
+
+        # After close + flush, a fresh session should start with 0 cached tokens.
+        # If KV was leaked, the old tokens would still occupy slots.
+        sid2 = self._open_session()
+        r = self._generate("Fresh start", session_params={"id": sid2})
+        self.assertEqual(
+            r["meta_info"]["cached_tokens"],
+            0,
+            "Fresh session after flush should have 0 cached tokens — KV may have leaked.",
+        )
+        self._close_session(sid2)
 
 
 if __name__ == "__main__":
