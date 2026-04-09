@@ -25,6 +25,8 @@ import contextvars
 import functools
 import logging
 import pkgutil
+import sys
+import types
 from collections import defaultdict
 from collections.abc import Callable
 from enum import Enum
@@ -267,6 +269,20 @@ class HookRegistry:
                 wrapped = _wrap_fn(wrapped, hook, hook_type)
 
         setattr(obj, attr_name, wrapped)
+
+        # Propagate the patch to all other modules that imported the original
+        # via ``from source_module import name``.  Python's ``from X import Y``
+        # copies the reference at import time; patching X alone leaves
+        # importers with a stale binding.
+        if wrapped is not original:
+            extra = _propagate_patch(original, wrapped, obj)
+            if extra:
+                logger.debug(
+                    "Propagated patch for %s to %d additional module(s)",
+                    target,
+                    extra,
+                )
+
         sources = sorted({_format_source(src) for _, _, src in hooks})
         logger.info(
             "Applied %d hook(s) to %s (from: %s)", len(hooks), target, ", ".join(sources)
@@ -277,6 +293,36 @@ class HookRegistry:
         """Reset all hooks and patches. Primarily for testing."""
         cls._hooks.clear()
         cls._patched.clear()
+
+
+def _propagate_patch(original: object, wrapped: object, source_module: object) -> int:
+    """Propagate a monkey-patch to all modules holding a stale ``from X import Y`` binding.
+
+    After ``setattr(source_module, name, wrapped)`` updates the defining module,
+    other modules that did ``from source_module import name`` still hold a direct
+    reference to the old *original* object.  This walks ``sys.modules`` and
+    replaces every such stale binding with *wrapped*.
+
+    Returns the number of additional module attributes that were patched.
+    """
+    patched_count = 0
+    for mod in list(sys.modules.values()):
+        if mod is source_module or mod is None:
+            continue
+        if not isinstance(mod, types.ModuleType):
+            continue
+        try:
+            mod_vars = vars(mod)
+        except TypeError:
+            continue
+        for attr_name, attr_value in list(mod_vars.items()):
+            if attr_value is original:
+                try:
+                    setattr(mod, attr_name, wrapped)
+                    patched_count += 1
+                except (AttributeError, TypeError):
+                    pass
+    return patched_count
 
 
 def _wrap_fn(
