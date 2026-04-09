@@ -15,8 +15,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 from sglang.srt.managers.io_struct import (
     CloseSessionReqInput,
@@ -80,16 +79,6 @@ class SessionReqNode:
             return ret
 
 
-@dataclass
-class TurnRecord:
-    """Lightweight snapshot of a completed streaming turn for backtracking."""
-
-    rid: str
-    origin_input_ids: List[int]
-    output_ids: List[int]
-    kv_end_pos: int
-
-
 class Session:
     def __init__(
         self,
@@ -105,33 +94,11 @@ class Session:
         self.last_active_time: float = time.monotonic()
         self.req_nodes: Dict[str, SessionReqNode] = {}
         self.close_on_finish: bool = False
-        self.turn_history: List[TurnRecord] = []
 
     def is_timed_out(self) -> bool:
         if self.timeout is None:
             return False
         return time.monotonic() - self.last_active_time > self.timeout
-
-    def _is_current_streaming_rid(self, rid: str) -> bool:
-        if not self.req_nodes:
-            return False
-        latest_rid = next(iter(self.req_nodes))
-        return rid == latest_rid
-
-    def _find_turn_record(self, rid: str) -> Optional[TurnRecord]:
-        return self.turn_records.get(rid)
-
-    def _save_turn_record(self, req: Req):
-        output_ids = list(req.output_ids)
-        kv_end = len(req.origin_input_ids) + len(output_ids)
-        record = TurnRecord(
-            rid=req.rid,
-            origin_input_ids=list(req.origin_input_ids),
-            output_ids=output_ids,
-            kv_end_pos=kv_end,
-        )
-        self.turn_order.append(record.rid)
-        self.turn_records[record.rid] = record
 
     @staticmethod
     def _trim_bos(req: TokenizedGenerateReqInput, tokenizer):
@@ -170,18 +137,18 @@ class Session:
         last_req = None
         abort = False
         abort_message = ""
-        backtrack_target: Optional[TurnRecord] = None
         kv_reuse_len: Optional[int] = None
         if self.streaming:
-            target_rid = session_params.rid
-            if target_rid is not None and not self._is_current_streaming_rid(
-                target_rid
-            ):
-                backtrack_target = self._find_turn_record(target_rid)
-                if backtrack_target is None:
-                    abort = True
-                    abort_message = f"Invalid rid for streaming session: {target_rid}"
-            if not abort and self.req_nodes:
+            # Streaming sessions: simple appends + offset-based backtracking only.
+            if session_params.replace:
+                abort = True
+                abort_message = "Streaming sessions do not support replace."
+            elif session_params.drop_previous_output:
+                abort = True
+                abort_message = (
+                    "Streaming sessions do not support drop_previous_output."
+                )
+            elif self.req_nodes:
                 assert len(self.req_nodes) == 1
                 _, last_req_node = self.req_nodes.popitem()
                 last_req = last_req_node.req
@@ -211,28 +178,7 @@ class Session:
                         abort_message = "Session request is appending to a request that hasn't finished."
                         logging.warning(abort_message)
 
-        if self.streaming and backtrack_target is not None:
-            self._trim_bos(req, tokenizer)
-            base_ids = backtrack_target.origin_input_ids + backtrack_target.output_ids
-            kv_reuse_len = backtrack_target.kv_end_pos
-
-            if session_params.drop_previous_output:
-                base_ids = backtrack_target.origin_input_ids[:]
-                kv_reuse_len = len(backtrack_target.origin_input_ids)
-
-            if session_params.offset and session_params.offset != 0:
-                base_ids = base_ids[: session_params.offset]
-                kv_reuse_len = min(kv_reuse_len, session_params.offset)
-
-            input_ids = base_ids + req.input_ids
-            input_ids_unpadded = base_ids + req.input_ids
-
-            idx = self.turn_order.index(backtrack_target.rid)
-            for removed_rid in self.turn_order[idx + 1 :]:
-                del self.turn_records[removed_rid]
-            self.turn_order = self.turn_order[: idx + 1]
-
-        elif last_req is not None:
+        if last_req is not None:
             self._trim_bos(req, tokenizer)
 
             input_ids = (
@@ -262,11 +208,8 @@ class Session:
             else:
                 input_ids_unpadded += req.input_ids
 
-            if self.streaming and not session_params.replace:
-                kv_reuse_len = None
-                if session_params.drop_previous_output:
-                    kv_reuse_len = len(last_req.origin_input_ids)
-                elif session_params.offset and session_params.offset != 0:
+            if self.streaming:
+                if session_params.offset and session_params.offset != 0:
                     kv_reuse_len = session_params.offset
         else:
             input_ids = req.input_ids
@@ -306,8 +249,6 @@ class Session:
             new_req.set_finish_with_abort(abort_message)
         elif self.streaming:
             if last_req is not None:
-                if backtrack_target is None:
-                    self._save_turn_record(last_req)
                 last_req.session = None
             self.req_nodes[req.rid] = SessionReqNode(new_req)
         else:

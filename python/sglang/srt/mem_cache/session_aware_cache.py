@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
 
-from sglang.srt.managers.schedule_batch import FINISH_ABORT
 from sglang.srt.mem_cache.base_prefix_cache import (
     BasePrefixCache,
     DecLockRefParams,
@@ -187,11 +186,6 @@ class SessionAwareCache(BasePrefixCache):
         if not _is_streaming(req):
             return self.inner.match_prefix(params)
 
-        if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
-            req.finished_reason, FINISH_ABORT
-        ):
-            return self.inner.match_prefix(params)
-
         session_id = req.session.session_id
         slot = self.slots.get(session_id)
         if slot is None or slot.req_pool_idx is None:
@@ -233,11 +227,7 @@ class SessionAwareCache(BasePrefixCache):
         if not _is_streaming(req):
             return self.inner.cache_finished_req(req, is_insert=is_insert, **kwargs)
 
-        if isinstance(req.to_finish, FINISH_ABORT) or isinstance(
-            req.finished_reason, FINISH_ABORT
-        ):
-            self.inner.cache_finished_req(req, is_insert=is_insert, **kwargs)
-            return
+        from sglang.srt.managers.schedule_batch import FINISH_ABORT
 
         session_id = req.session.session_id
         slot = self.slots.get(session_id)
@@ -326,19 +316,20 @@ class SessionAwareCache(BasePrefixCache):
 
         Tokens below cache_protected_len belong to the radix tree and must
         not be freed here (they are released via dec_lock_ref on session close).
+        The effective truncation length is clamped to cache_protected_len to
+        preserve the invariant kv_committed_len >= cache_protected_len.
         """
+        new_len = max(new_len, slot.cache_protected_len)
         old_allocated = slot.kv_allocated_len
-        free_start = max(new_len, slot.cache_protected_len)
-        if free_start < old_allocated:
+        if new_len < old_allocated:
             excess = self.req_to_token_pool.req_to_token[
-                req.req_pool_idx, free_start:old_allocated
+                req.req_pool_idx, new_len:old_allocated
             ]
             self.token_to_kv_pool_allocator.free(excess)
-        new_allocated = max(new_len, slot.cache_protected_len)
         slot.kv_committed_len = new_len
-        slot.kv_allocated_len = new_allocated
+        slot.kv_allocated_len = new_len
         req.kv_committed_len = new_len
-        req.kv_allocated_len = new_allocated
+        req.kv_allocated_len = new_len
 
     # -- Session lifecycle --
 
