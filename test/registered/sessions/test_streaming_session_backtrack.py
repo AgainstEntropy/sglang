@@ -1,6 +1,6 @@
 """
-Streaming session backtracking tests: basic backtrack, drop_previous_output,
-offset, invalid rid rejection, and memory leak after repeated backtracks.
+Streaming session backtracking tests: offset-based backtrack, KV reuse,
+and memory leak verification.
 
 All tests share a single server (DEFAULT_SMALL_MODEL) with streaming sessions
 and chunked prefill enabled.
@@ -87,127 +87,79 @@ class TestStreamingSessionBacktrack(CustomTestCase):
     # Tests
     # ------------------------------------------------------------------
 
-    def test_basic_backtrack(self):
-        """Backtrack to an earlier turn and branch; KV should be reused."""
+    def test_basic_backtrack_with_offset(self):
+        """Backtrack via offset to an earlier position; KV should be reused."""
         sid = self._open_session()
 
+        # Turn 1
         r1 = self._generate("Hello world", session_params={"id": sid})
-        rid1 = r1["meta_info"]["id"]
+        turn1_end = (
+            r1["meta_info"]["prompt_tokens"] + r1["meta_info"]["completion_tokens"]
+        )
 
-        r2 = self._generate(" How are you?", session_params={"id": sid, "rid": rid1})
-        rid2 = r2["meta_info"]["id"]
+        # Turn 2 — appends to turn 1
+        r2 = self._generate(" How are you?", session_params={"id": sid})
         self.assertGreater(
             r2["meta_info"]["cached_tokens"], 0, "Turn 2 should reuse KV"
         )
 
-        # Backtrack to turn 1 — should still have cached KV
+        # Backtrack to end of turn 1 via offset — should still reuse KV
         r3 = self._generate(
-            " What about France?", session_params={"id": sid, "rid": rid1}
+            " What about France?",
+            session_params={"id": sid, "offset": turn1_end},
         )
-        self.assertGreater(
+        self.assertEqual(
             r3["meta_info"]["cached_tokens"],
-            0,
-            "Backtrack should reuse KV from turn 1",
+            turn1_end,
+            "Backtrack via offset should reuse exactly turn1's KV",
         )
 
         self._close_session(sid)
 
-    def test_drop_previous_output(self):
-        """Backtrack with drop_previous_output reduces prompt tokens."""
+    def test_offset_truncates_context(self):
+        """Offset truncates the base context to the specified position."""
         sid = self._open_session()
 
+        # Turn 1
         r1 = self._generate("Hello world", session_params={"id": sid})
-        rid1 = r1["meta_info"]["id"]
 
-        self._generate(" Continue.", session_params={"id": sid, "rid": rid1})
+        # Turn 2 — normal append
+        r2 = self._generate(" Continue.", session_params={"id": sid})
 
-        # Backtrack with output kept
-        r_with = self._generate(" Summarize.", session_params={"id": sid, "rid": rid1})
-        # Backtrack with output dropped
-        r_drop = self._generate(
-            " Summarize.",
-            session_params={
-                "id": sid,
-                "rid": rid1,
-                "drop_previous_output": True,
-            },
-        )
-        self.assertLess(
-            r_drop["meta_info"]["prompt_tokens"],
-            r_with["meta_info"]["prompt_tokens"],
-            "drop_previous_output should produce fewer prompt tokens",
-        )
-
-        self._close_session(sid)
-
-    def test_offset(self):
-        """Backtrack with offset truncates the base context."""
-        sid = self._open_session()
-
-        r1 = self._generate("Hello world", session_params={"id": sid})
-        rid1 = r1["meta_info"]["id"]
-
-        r2 = self._generate(" Continue.", session_params={"id": sid, "rid": rid1})
-
-        # Backtrack with a small offset — fewer prompt tokens than full context
-        r_off = self._generate(
+        # Turn 3 — backtrack with a small offset
+        r3 = self._generate(
             " Continue.",
-            session_params={"id": sid, "rid": rid1, "offset": 5},
+            session_params={"id": sid, "offset": 5},
         )
-        continue_tokens = (
+        append_tokens = (
             r2["meta_info"]["prompt_tokens"]
             - r1["meta_info"]["prompt_tokens"]
             - r1["meta_info"]["completion_tokens"]
         )
         self.assertEqual(
-            r_off["meta_info"]["prompt_tokens"],
-            5 + continue_tokens,
+            r3["meta_info"]["prompt_tokens"],
+            5 + append_tokens,
             "prompt_tokens should be exactly offset + new input tokens",
         )
 
         self._close_session(sid)
 
-    def test_invalid_rid_after_backtrack(self):
-        """After backtrack, the superseded rid should be rejected."""
-        sid = self._open_session()
-
-        r1 = self._generate("Hello world", session_params={"id": sid})
-        rid1 = r1["meta_info"]["id"]
-
-        r2 = self._generate(" How are you?", session_params={"id": sid, "rid": rid1})
-        rid2 = r2["meta_info"]["id"]
-
-        # Backtrack to rid1 — this should invalidate rid2
-        self._generate(" What about France?", session_params={"id": sid, "rid": rid1})
-
-        # rid2 should now be rejected with HTTP 400
-        resp = requests.post(
-            self.base_url + "/generate",
-            json={
-                "text": " Fail.",
-                "sampling_params": {"temperature": 0, "max_new_tokens": 8},
-                "session_params": {"id": sid, "rid": rid2},
-            },
-            timeout=120,
-        )
-        self.assertEqual(
-            resp.status_code,
-            400,
-            "Request with invalidated rid should be rejected with 400",
-        )
-
-        self._close_session(sid)
-
     def test_no_memory_leak(self):
-        """Multiple backtracks should not leak KV memory."""
+        """Multiple backtracks via offset should not leak KV memory."""
         sid = self._open_session()
 
+        # Turn 1
         r1 = self._generate("Hello world", session_params={"id": sid})
-        rid1 = r1["meta_info"]["id"]
+        turn1_end = (
+            r1["meta_info"]["prompt_tokens"] + r1["meta_info"]["completion_tokens"]
+        )
 
         # Several forward-then-backtrack cycles
         for i in range(5):
-            self._generate(f" Turn {i}.", session_params={"id": sid, "rid": rid1})
+            self._generate(
+                f" Turn {i}.",
+                session_params={"id": sid, "offset": turn1_end},
+            )
 
         self._close_session(sid)
         requests.post(self.base_url + "/flush_cache")
