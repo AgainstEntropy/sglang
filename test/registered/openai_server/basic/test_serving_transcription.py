@@ -1,6 +1,8 @@
 """
 Test the OpenAI-compatible /v1/audio/transcriptions endpoint with Whisper.
 
+Covers non-streaming and normal (token-level) streaming transcription.
+
 Usage:
     python3 test_serving_transcription.py -v
 """
@@ -16,6 +18,8 @@ from sglang.test.test_utils import (
     DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
     DEFAULT_URL_FOR_TEST,
     CustomTestCase,
+    download_audio_bytes,
+    parse_sse_stream,
     popen_launch_server,
 )
 
@@ -23,13 +27,6 @@ register_cuda_ci(est_time=120, suite="stage-b-test-1-gpu-small")
 
 WHISPER_MODEL = "openai/whisper-large-v3"
 AUDIO_URL = "https://raw.githubusercontent.com/sgl-project/sgl-test-files/refs/heads/main/audios/Trump_WEF_2018_10s.mp3"
-
-
-def download_audio_bytes(url=AUDIO_URL):
-    """Download audio file and return raw bytes."""
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    return response.content
 
 
 class TestServingTranscription(CustomTestCase):
@@ -55,8 +52,8 @@ class TestServingTranscription(CustomTestCase):
             kill_process_tree(cls.process.pid)
 
     def _transcribe(self, language="en"):
-        """Send a transcription request and return the JSON response."""
-        audio_bytes = download_audio_bytes()
+        """Send a non-streaming transcription request and return the JSON response."""
+        audio_bytes = download_audio_bytes(AUDIO_URL)
         response = requests.post(
             self.base_url + "/v1/audio/transcriptions",
             files={"file": ("audio.mp3", io.BytesIO(audio_bytes), "audio/mpeg")},
@@ -67,6 +64,25 @@ class TestServingTranscription(CustomTestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    def _transcribe_stream(self, language="en"):
+        """Send a streaming transcription request and return parsed SSE events."""
+        audio_bytes = download_audio_bytes(AUDIO_URL)
+        response = requests.post(
+            self.base_url + "/v1/audio/transcriptions",
+            files={"file": ("audio.mp3", io.BytesIO(audio_bytes), "audio/mpeg")},
+            data={
+                "model": "whisper",
+                "language": language,
+                "stream": "true",
+            },
+            timeout=120,
+            stream=True,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return parse_sse_stream(response)
+
+    # ---- Non-streaming tests ----
 
     def test_basic_transcription(self):
         """Test that transcription returns a valid non-empty response."""
@@ -102,6 +118,50 @@ class TestServingTranscription(CustomTestCase):
                 results[i],
                 f"Transcription {i + 1} differs from first transcription",
             )
+
+    # ---- Streaming tests ----
+
+    def test_streaming_returns_events(self):
+        """Streaming transcription should return SSE events with non-empty text."""
+        events, full_text = self._transcribe_stream()
+        self.assertGreater(len(events), 0, "Should receive at least one SSE event")
+        self.assertGreater(len(full_text), 0, "Assembled text should not be empty")
+
+        last_event = events[-1]
+        self.assertEqual(
+            last_event["choices"][0].get("finish_reason"),
+            "stop",
+            "Last event should have finish_reason='stop'",
+        )
+
+    def test_streaming_event_format(self):
+        """Verify each SSE event has the expected structure."""
+        events, _ = self._transcribe_stream()
+        for i, event in enumerate(events):
+            self.assertIn("id", event, f"Event {i} missing 'id'")
+            self.assertIn("choices", event, f"Event {i} missing 'choices'")
+            self.assertEqual(
+                len(event["choices"]), 1, f"Event {i} should have exactly 1 choice"
+            )
+            self.assertIn(
+                "delta", event["choices"][0], f"Event {i} choice missing 'delta'"
+            )
+
+    def test_streaming_vs_nonstreaming_consistency(self):
+        """Streaming and non-streaming should produce the same transcription."""
+        non_stream = self._transcribe()
+        _, stream_text = self._transcribe_stream()
+
+        non_stream_text = non_stream["text"].strip()
+        stream_text = stream_text.strip()
+
+        self.assertEqual(
+            non_stream_text,
+            stream_text,
+            f"Streaming text differs from non-streaming.\n"
+            f"  non-stream: {non_stream_text[:200]}\n"
+            f"  stream:     {stream_text[:200]}",
+        )
 
 
 if __name__ == "__main__":
