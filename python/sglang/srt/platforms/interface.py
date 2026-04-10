@@ -10,12 +10,12 @@ Out-of-tree platforms register via setuptools entry_points under the
 "sglang.platform_plugins" group and should subclass SRTPlatform.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 
 if TYPE_CHECKING:
-    import torch
+    pass
 
 # Re-export for convenience
 __all__ = ["SRTPlatform", "PlatformEnum"]
@@ -108,7 +108,7 @@ class SRTPlatform(DeviceMixin):
         """Whether this platform supports piecewise CUDA graph.
 
         Controls PiecewiseCudaGraphRunner for the prefill/extend path
-        (torch.compile backend). 
+        (torch.compile backend).
         """
         return False
 

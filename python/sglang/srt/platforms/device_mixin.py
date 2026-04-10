@@ -170,9 +170,7 @@ class DeviceMixin:
         """[Planned] Get unique device identifier string."""
         raise NotImplementedError
 
-    def get_device_capability(
-        self, device_id: int = 0
-    ) -> Optional["DeviceCapability"]:
+    def get_device_capability(self, device_id: int = 0) -> Optional["DeviceCapability"]:
         """[Planned] Get device compute capability. None if N/A."""
         raise NotImplementedError
 

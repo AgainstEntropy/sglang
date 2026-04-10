@@ -302,9 +302,7 @@ class ModelRunnerKVCacheMixin:
                     enable_memory_saver=self.server_args.enable_memory_saver,
                     start_layer=self.start_layer,
                     end_layer=self.end_layer,
-                    index_head_dim=get_nsa_index_head_dim(
-                        self.model_config.hf_config
-                    ),
+                    index_head_dim=get_nsa_index_head_dim(self.model_config.hf_config),
                 )
             elif self.use_mla_backend:
                 PoolCls = current_platform.get_mla_kv_pool_cls()
@@ -339,7 +337,9 @@ class ModelRunnerKVCacheMixin:
                     start_layer=self.start_layer,
                     end_layer=self.end_layer,
                 )
-        elif self.server_args.attention_backend == "ascend" and not self.mambaish_config:
+        elif (
+            self.server_args.attention_backend == "ascend" and not self.mambaish_config
+        ):
             if self.is_hybrid_swa:
                 from sglang.srt.hardware_backend.npu.memory_pool_npu import (
                     NPUMHATokenToKVPool,
