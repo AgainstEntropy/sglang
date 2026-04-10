@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dummy-platform-plugin"
+version = "0.1.0"
+description = "Dummy OOT platform plugin for SGLang integration tests"
+requires-python = ">=3.10"
+
+[project.entry-points."sglang.platform_plugins"]
+dummy = "dummy_platform_plugin:activate"
+
+[project.entry-points."sglang.plugins"]
+dummy_hooks = "dummy_platform_plugin:register"
