@@ -612,6 +612,7 @@ class TestSRTPlatformOverrides(unittest.TestCase):
 
     def test_custom_supports_fp8(self):
         """Test platform can override supports_fp8."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.CUDA
             device_name = "cuda"
@@ -652,6 +653,7 @@ class TestSRTPlatformOverrides(unittest.TestCase):
 
     def test_custom_support_cuda_graph(self):
         """Test platform can override support_cuda_graph."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.CUDA
             device_name = "cuda"
@@ -692,6 +694,7 @@ class TestSRTPlatformOverrides(unittest.TestCase):
 
     def test_custom_support_piecewise_cuda_graph(self):
         """Test platform can override support_piecewise_cuda_graph."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.CUDA
             device_name = "cuda"
@@ -732,6 +735,7 @@ class TestSRTPlatformOverrides(unittest.TestCase):
 
     def test_custom_get_dispatch_key_name(self):
         """Test platform can override get_dispatch_key_name."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.NPU
             device_name = "npu"
@@ -772,6 +776,7 @@ class TestSRTPlatformOverrides(unittest.TestCase):
 
     def test_custom_get_compile_backend(self):
         """Test platform can override get_compile_backend."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.NPU
             device_name = "npu"
@@ -817,6 +822,7 @@ class TestSRTPlatformInheritance(unittest.TestCase):
 
     def test_inherits_device_mixin_methods(self):
         """Test SRTPlatform inherits DeviceMixin methods."""
+
         class CustomPlatform(SRTPlatform):
             _enum = PlatformEnum.CUDA
             device_name = "cuda"
