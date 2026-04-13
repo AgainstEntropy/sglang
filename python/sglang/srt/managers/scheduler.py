@@ -3684,7 +3684,7 @@ def run_scheduler_process(
     pp_rank: int,
     dp_rank: Optional[int],
     pipe_writer,
-):  
+):
     # Load plugins so hooks can override Scheduler and its dependencies.
     from sglang.srt.plugins import load_plugins
 

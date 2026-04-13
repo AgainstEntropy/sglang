@@ -1171,6 +1171,7 @@ class ServerArgs:
             self.disable_piecewise_cuda_graph = True
         # 6b. OOT platforms that don't support piecewise cuda graph
         from sglang.srt.platforms import current_platform
+
         if current_platform.is_out_of_tree():
             if not current_platform.support_piecewise_cuda_graph():
                 self.disable_piecewise_cuda_graph = True

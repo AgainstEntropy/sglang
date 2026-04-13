@@ -54,6 +54,7 @@ from sglang.srt.mem_cache.utils import (
     set_mla_kv_buffer_triton_fp8_quant,
     set_mla_kv_scale_buffer_triton,
 )
+from sglang.srt.platforms import current_platform
 from sglang.srt.utils import (
     cpu_has_amx_support,
     is_cpu,
@@ -63,8 +64,6 @@ from sglang.srt.utils import (
     next_power_of_2,
 )
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
-
-from sglang.srt.platforms import current_platform
 
 if TYPE_CHECKING:
     from sglang.srt.managers.cache_controller import LayerDoneCounter

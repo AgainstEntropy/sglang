@@ -119,9 +119,7 @@ class HookRegistry:
         # Warn on duplicate REPLACE for the same target
         if hook_type == HookType.REPLACE:
             existing_replace = [
-                (h, src)
-                for ht, h, src in cls._hooks[target]
-                if ht == HookType.REPLACE
+                (h, src) for ht, h, src in cls._hooks[target] if ht == HookType.REPLACE
             ]
             if existing_replace:
                 prev, prev_src = existing_replace[-1]
@@ -176,8 +174,7 @@ class HookRegistry:
         """
         _target, hooks = item
         has_class_replace = any(
-            isinstance(h, type) and ht == HookType.REPLACE
-            for ht, h, _ in hooks
+            isinstance(h, type) and ht == HookType.REPLACE for ht, h, _ in hooks
         )
         return (0 if has_class_replace else 1, _target)
 
@@ -186,7 +183,9 @@ class HookRegistry:
         """Resolve target, build wrapper chain, and replace the original."""
         parts = target.rsplit(".", 1)
         if len(parts) != 2:
-            raise ValueError(f"Invalid target path (need at least module.attr): {target}")
+            raise ValueError(
+                f"Invalid target path (need at least module.attr): {target}"
+            )
 
         obj_path, attr_name = parts
         obj = pkgutil.resolve_name(obj_path)
@@ -233,9 +232,7 @@ class HookRegistry:
 
         if around_count > 1:
             around_sources = [
-                _format_source(src)
-                for ht, _, src in hooks
-                if ht == HookType.AROUND
+                _format_source(src) for ht, _, src in hooks if ht == HookType.AROUND
             ]
             logger.warning(
                 "Multiple AROUND hooks on '%s' (%d hooks, from: %s). If any AROUND hook "
@@ -249,7 +246,9 @@ class HookRegistry:
                 "Target '%s' has both REPLACE and %s hooks. "
                 "REPLACE will be applied first, then wrapped by other hooks.",
                 target,
-                ", ".join(sorted({ht.value for ht in hook_types if ht != HookType.REPLACE})),
+                ", ".join(
+                    sorted({ht.value for ht in hook_types if ht != HookType.REPLACE})
+                ),
             )
 
         # Build the wrapper chain.
@@ -285,7 +284,10 @@ class HookRegistry:
 
         sources = sorted({_format_source(src) for _, _, src in hooks})
         logger.info(
-            "Applied %d hook(s) to %s (from: %s)", len(hooks), target, ", ".join(sources)
+            "Applied %d hook(s) to %s (from: %s)",
+            len(hooks),
+            target,
+            ", ".join(sources),
         )
 
     @classmethod
@@ -325,9 +327,7 @@ def _propagate_patch(original: object, wrapped: object, source_module: object) -
     return patched_count
 
 
-def _wrap_fn(
-    original_fn: Callable, hook: Callable, hook_type: HookType
-) -> Callable:
+def _wrap_fn(original_fn: Callable, hook: Callable, hook_type: HookType) -> Callable:
     """Create a wrapper function based on the hook type."""
     if hook_type == HookType.REPLACE:
 
