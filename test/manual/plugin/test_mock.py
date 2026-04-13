@@ -144,7 +144,8 @@ class TestPlatformDiscovery(CustomTestCase):
 
     def _resolve(self, eps, **env):
         with (
-            patch("importlib.metadata.entry_points", return_value=eps),
+            patch("sglang.srt.platforms.entry_points", return_value=eps),
+            patch("sglang.srt.plugins.entry_points", return_value=eps),
             _plugin_env(**env),
         ):
             from sglang.srt.platforms import _resolve_platform
@@ -534,7 +535,7 @@ class TestLoadPlugins(CustomTestCase):
         fn = MagicMock()
         ep = _make_ep("p", fn)
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins_by_group
@@ -547,7 +548,7 @@ class TestLoadPlugins(CustomTestCase):
         ep_yes = _make_ep("yes", MagicMock(), "d1")
         ep_no = _make_ep("no", MagicMock(), "d2")
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep_yes, ep_no]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep_yes, ep_no]),
             _plugin_env(SGLANG_PLUGINS="yes"),
         ):
             from sglang.srt.plugins import load_plugins_by_group
@@ -559,7 +560,7 @@ class TestLoadPlugins(CustomTestCase):
     def test_excluded_dists_skipped(self):
         ep = _make_ep("p", MagicMock(), "bad-dist")
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins_by_group
@@ -573,7 +574,7 @@ class TestLoadPlugins(CustomTestCase):
         calls = []
         ep = _make_ep("p", lambda: calls.append(1))
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins
@@ -590,7 +591,7 @@ class TestLoadPlugins(CustomTestCase):
 
         ep = _make_ep("h", register_hook)
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins
@@ -608,7 +609,7 @@ class TestLoadPlugins(CustomTestCase):
 
         ep = _make_ep("src", check, "my-dist")
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins
@@ -623,7 +624,7 @@ class TestLoadPlugins(CustomTestCase):
         ep_sel = _make_ep("sel", MagicMock(), "sel-d")
         ep_oth = _make_ep("oth", MagicMock(), "oth-d")
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep_sel, ep_oth]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep_sel, ep_oth]),
             _plugin_env(SGLANG_PLATFORM="sel"),
         ):
             from sglang.srt.plugins import _get_excluded_dists
@@ -648,7 +649,7 @@ class TestLoadPlugins(CustomTestCase):
         ep_bad = _make_ep("bad", bad, "d1")
         ep_good = _make_ep("good", good, "d2")
         with (
-            patch("importlib.metadata.entry_points", return_value=[ep_bad, ep_good]),
+            patch("sglang.srt.plugins.entry_points", return_value=[ep_bad, ep_good]),
             _plugin_env(),
         ):
             from sglang.srt.plugins import load_plugins

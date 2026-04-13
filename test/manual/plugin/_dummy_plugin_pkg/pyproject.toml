@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Dummy OOT platform plugin for SGLang integration tests"
 requires-python = ">=3.10"
 
-[project.entry-points."sglang.platform_plugins"]
+[project.entry-points."sglang.srt.platforms"]
 dummy = "dummy_platform_plugin:activate"
 
-[project.entry-points."sglang.plugins"]
+[project.entry-points."sglang.srt.plugins"]
 dummy_hooks = "dummy_platform_plugin:register"
