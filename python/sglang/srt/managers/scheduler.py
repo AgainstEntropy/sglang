@@ -66,6 +66,7 @@ from sglang.srt.distributed import get_pp_group, get_world_group
 from sglang.srt.distributed.parallel_state import get_tp_group
 from sglang.srt.dllm.mixin.scheduler import SchedulerDllmMixin
 from sglang.srt.environ import envs
+from sglang.srt.plugins import load_plugins
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.layers.attention.mamba.ops import (
     initialize_mamba_selective_state_update_backend,
@@ -3686,8 +3687,6 @@ def run_scheduler_process(
     pipe_writer,
 ):
     # Load plugins so hooks can override Scheduler and its dependencies.
-    from sglang.srt.plugins import load_plugins
-
     load_plugins()
     dp_rank = configure_scheduler(
         server_args, tp_rank, attn_cp_rank, moe_dp_rank, moe_ep_rank, pp_rank, dp_rank

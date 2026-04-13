@@ -11,9 +11,12 @@ Usage:
 """
 
 import logging
-import os
+import pkgutil
+from importlib.metadata import entry_points
 
+from sglang.srt.environ import envs
 from sglang.srt.platforms.interface import SRTPlatform
+from sglang.srt.plugins import PLATFORM_PLUGINS_GROUP, load_plugins_by_group
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +45,12 @@ def _resolve_platform() -> SRTPlatform:
 
        SGLANG_PLATFORM matches against entry_point names.
     """
-    from importlib.metadata import entry_points as _entry_points
-
-    from sglang.srt.plugins import PLATFORM_PLUGINS_GROUP
-
-    selected = os.environ.get("SGLANG_PLATFORM")
+    selected = envs.SGLANG_PLATFORM.get()
 
     if selected:
         # Front-loading filter: only import and activate the specified plugin.
         # Other plugins' modules are never loaded — avoids pulling their deps.
-        discovered = _entry_points(group=PLATFORM_PLUGINS_GROUP)
+        discovered = entry_points(group=PLATFORM_PLUGINS_GROUP)
         ep_map = {ep.name: ep for ep in discovered}
 
         if selected not in ep_map:
@@ -78,8 +77,6 @@ def _resolve_platform() -> SRTPlatform:
         return _load_platform_class(result)()
 
     # Auto-discover: import and activate all plugins, expect exactly one
-    from sglang.srt.plugins import load_plugins_by_group
-
     all_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
 
     activated: dict[str, str] = {}
@@ -110,8 +107,6 @@ def _resolve_platform() -> SRTPlatform:
 
 def _load_platform_class(qualname: str) -> type:
     """Load an SRTPlatform subclass from its fully-qualified class name."""
-    import pkgutil
-
     cls = pkgutil.resolve_name(qualname)
     if not isinstance(cls, type) or not issubclass(cls, SRTPlatform):
         raise TypeError(

@@ -8,8 +8,8 @@ The framework provides two plugin types, both discovered via Python's standard `
 
 | Plugin Type | Entry Point Group | Purpose |
 |---|---|---|
-| **Hardware Platform Plugin** | `sglang.platform_plugins` | Register a custom hardware platform (device operations, KV cache pools, attention backends, graph capture, compilation backends, etc.) |
-| **General Plugin** | `sglang.plugins` | Inject hooks (before/after/around/replace) into any function/method, or replace entire classes |
+| **Hardware Platform Plugin** | `sglang.srt.platforms` | Register a custom hardware platform (device operations, KV cache pools, attention backends, graph capture, compilation backends, etc.) |
+| **General Plugin** | `sglang.srt.plugins` | Inject hooks (before/after/around/replace) into any function/method, or replace entire classes |
 
 ### Principles
 
@@ -51,7 +51,7 @@ Key design points:
 `current_platform` is a **lazy singleton** in `sglang.srt.platforms`. On first access it resolves the active platform through the following priority chain:
 
 ```
-entry_points("sglang.platform_plugins")  → Enumerate ALL plugins by name (metadata only)
+entry_points("sglang.srt.platforms")  → Enumerate ALL plugins by name (metadata only)
   │
   ├─ SGLANG_PLATFORM set (front-loading filter):
   │   ├─ Name not found in discovered → RuntimeError
@@ -80,7 +80,7 @@ entry_points("sglang.platform_plugins")  → Enumerate ALL plugins by name (meta
 ```
 load_plugins()
   ├── _get_excluded_dists()                       → compute dists to skip (via SGLANG_PLATFORM)
-  ├── load_plugins_by_group("sglang.plugins",     → discover entry_points, filter by SGLANG_PLUGINS
+  ├── load_plugins_by_group("sglang.srt.plugins",     → discover entry_points, filter by SGLANG_PLUGINS
   │     excluded_dists=...)                          skip plugins from unselected platform packages
   ├── for each plugin:                            → set _current_plugin_source context var
   │     func()                                      side effects (register hooks with source tracking)
@@ -119,7 +119,7 @@ build-backend = "setuptools.build_meta"
 name = "my-platform-plugin"
 version = "0.1.0"
 
-[project.entry-points."sglang.platform_plugins"]
+[project.entry-points."sglang.srt.platforms"]
 my_device = "my_platform_plugin:activate"
 ```
 
@@ -251,8 +251,8 @@ python -c "from sglang.srt.platforms import current_platform; print(current_plat
 
 | Variable | Description |
 |---|---|
-| `SGLANG_PLATFORM` | Select the platform plugin by entry_point name (e.g. `kunlun`, `demo_cuda`). When set, **only** the named plugin's `activate()` is called (front-loading filter) — other plugins are not touched. Additionally, general plugins (`sglang.plugins`) from unselected platform packages are automatically skipped to avoid importing their dependencies. Required when multiple plugins would activate. Errors if the name is not found or if the plugin's hardware is unavailable. |
-| `SGLANG_PLUGINS` | Comma-separated whitelist of general plugin names to load (group: `sglang.plugins`). If unset, all discovered general plugins are loaded. |
+| `SGLANG_PLATFORM` | Select the platform plugin by entry_point name (e.g. `kunlun`, `demo_cuda`). When set, **only** the named plugin's `activate()` is called (front-loading filter) — other plugins are not touched. Additionally, general plugins (`sglang.srt.plugins`) from unselected platform packages are automatically skipped to avoid importing their dependencies. Required when multiple plugins would activate. Errors if the name is not found or if the plugin's hardware is unavailable. |
+| `SGLANG_PLUGINS` | Comma-separated whitelist of general plugin names to load (group: `sglang.srt.plugins`). If unset, all discovered general plugins are loaded. |
 
 ---
 
@@ -289,7 +289,7 @@ build-backend = "setuptools.build_meta"
 name = "my-general-plugin"
 version = "0.1.0"
 
-[project.entry-points."sglang.plugins"]
+[project.entry-points."sglang.srt.plugins"]
 my_plugin = "my_general_plugin:register"
 ```
 

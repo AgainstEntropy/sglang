@@ -3,6 +3,7 @@ from typing import Callable, ClassVar
 from torch import nn
 
 from sglang.kernel_api_logging import debug_kernel_api
+from sglang.srt.platforms import current_platform
 from sglang.srt.utils import (
     cpu_has_amx_support,
     is_cpu,
@@ -110,8 +111,6 @@ class MultiPlatformOp(nn.Module):
 
     def dispatch_forward(self):
         # OOT platform dispatch: check registry then method lookup
-        from sglang.srt.platforms import current_platform
-
         if current_platform.is_out_of_tree():
             key = current_platform.get_dispatch_key_name()
             oot = self._oot_forward_registry.get(key, {})

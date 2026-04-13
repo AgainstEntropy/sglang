@@ -189,7 +189,21 @@ class HookRegistry:
 
         obj_path, attr_name = parts
         obj = pkgutil.resolve_name(obj_path)
+
+        # Check if the original is a classmethod or staticmethod by
+        # inspecting __dict__ before getattr() triggers the descriptor
+        # protocol (which would lose the wrapper type for classmethod).
         original = getattr(obj, attr_name)
+        is_classmethod = False
+        is_staticmethod = False
+        if isinstance(obj, type):
+            raw_attr = obj.__dict__.get(attr_name)
+            if isinstance(raw_attr, classmethod):
+                is_classmethod = True
+                original = raw_attr.__func__
+            elif isinstance(raw_attr, staticmethod):
+                is_staticmethod = True
+                original = raw_attr.__func__
 
         # Cross-target conflict detection: if the parent object is a class
         # that was already class-REPLACE'd, and the replacement class defines
@@ -266,6 +280,14 @@ class HookRegistry:
                 wrapped = hook
             else:
                 wrapped = _wrap_fn(wrapped, hook, hook_type)
+
+        # Restore classmethod/staticmethod decorator if the original had one.
+        if is_classmethod:
+            wrapped = classmethod(wrapped)
+            logger.debug("Preserved @classmethod decorator for %s", target)
+        elif is_staticmethod:
+            wrapped = staticmethod(wrapped)
+            logger.debug("Preserved @staticmethod decorator for %s", target)
 
         setattr(obj, attr_name, wrapped)
 

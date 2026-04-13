@@ -80,6 +80,7 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromTensorReqInput,
 )
 from sglang.srt.managers.multi_tokenizer_mixin import MultiTokenizerRouter
+from sglang.srt.plugins import load_plugins
 from sglang.srt.managers.scheduler import run_scheduler_process
 from sglang.srt.managers.template_manager import TemplateManager
 from sglang.srt.managers.tokenizer_manager import TokenizerManager
@@ -166,6 +167,10 @@ class Engine(EngineScoreMixin, EngineBase):
         The arguments of this function is the same as `sglang/srt/server_args.py::ServerArgs`.
         Please refer to `ServerArgs` for the documentation.
         """
+
+        # Ensure plugins are loaded before ServerArgs construction,
+        # so hooks on ServerArgs.__post_init__ fire correctly.
+        load_plugins()
 
         # Parse server_args
         if "server_args" in kwargs:
@@ -648,9 +653,8 @@ class Engine(EngineScoreMixin, EngineBase):
         configure_logger(server_args)
         _set_envs_and_config(server_args)
 
-        # Load plugins and apply hooks before server args validation.
-        from sglang.srt.plugins import load_plugins
-
+        # Defensive: ensure plugins loaded (may already be loaded by
+        # Engine.__init__ or CLI entry).
         load_plugins()
 
         server_args.check_server_args()

@@ -22,6 +22,7 @@ from sglang.srt.compilation.cuda_piecewise_backend import CUDAPiecewiseBackend
 from sglang.srt.compilation.npu_piecewise_backend import NPUPiecewiseBackend
 from sglang.srt.compilation.pass_manager import PostGradPassManager
 from sglang.srt.environ import envs
+from sglang.srt.platforms import current_platform
 from sglang.srt.utils.common import is_npu
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,6 @@ def make_backend(
     compiled_graph_for_general_shape: Callable,
     sglang_backend,
 ):
-
-    from sglang.srt.platforms import current_platform
 
     if current_platform.is_out_of_tree():
         backend_cls = current_platform.get_piecewise_backend_cls()

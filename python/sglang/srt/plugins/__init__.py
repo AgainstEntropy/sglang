@@ -2,8 +2,8 @@
 SGLang Unified Plugin Framework.
 
 Supports two types of plugins via setuptools entry_points:
-1. Hardware Platform Plugins (sglang.platform_plugins) - register custom hardware platforms
-2. General Plugins (sglang.plugins) - inject hooks into functions/methods, replace classes, etc.
+1. Hardware Platform Plugins (sglang.srt.platforms) - register custom hardware platforms
+2. General Plugins (sglang.srt.plugins) - inject hooks into functions/methods, replace classes, etc.
 
 Plugins are discovered automatically when installed via pip.
 - Platform plugins: use ``SGLANG_PLATFORM`` to select when multiple are installed.
@@ -11,15 +11,22 @@ Plugins are discovered automatically when installed via pip.
 """
 
 import logging
-import os
 from collections.abc import Callable
+from importlib.metadata import entry_points
 from typing import Any
+
+from sglang.srt.environ import envs
+from sglang.srt.plugins.hook_registry import (
+    HookRegistry,
+    HookSource,
+    _current_plugin_source,
+)
 
 logger = logging.getLogger(__name__)
 
 # Entry point group names
-PLATFORM_PLUGINS_GROUP = "sglang.platform_plugins"
-GENERAL_PLUGINS_GROUP = "sglang.plugins"
+PLATFORM_PLUGINS_GROUP = "sglang.srt.platforms"
+GENERAL_PLUGINS_GROUP = "sglang.srt.plugins"
 
 # Guard against multiple loads in the same process
 _plugins_loaded = False
@@ -41,11 +48,9 @@ def load_plugins_by_group(
     Returns:
         Dictionary mapping plugin name to ``(callable, dist_name)``.
     """
-    from importlib.metadata import entry_points
-
     # SGLANG_PLUGINS whitelist (comma-separated plugin names)
     allowed_set: set[str] | None = None
-    allowed_str = os.environ.get("SGLANG_PLUGINS")
+    allowed_str = envs.SGLANG_PLUGINS.get()
     if allowed_str:
         allowed_set = {x.strip() for x in allowed_str.split(",") if x.strip()}
 
@@ -88,12 +93,10 @@ def _get_excluded_dists() -> set[str]:
     selected by ``SGLANG_PLATFORM``.  This prevents unselected platform
     packages from registering hooks that pull their hardware dependencies.
     """
-    from importlib.metadata import entry_points as _entry_points
-
-    selected = os.environ.get("SGLANG_PLATFORM")
+    selected = envs.SGLANG_PLATFORM.get()
     if not selected:
         return set()
-    platform_eps = _entry_points(group=PLATFORM_PLUGINS_GROUP)
+    platform_eps = entry_points(group=PLATFORM_PLUGINS_GROUP)
     return {ep.dist.name for ep in platform_eps if ep.dist and ep.name != selected}
 
 
@@ -123,8 +126,6 @@ def load_plugins():
         excluded_dists=_get_excluded_dists(),
     )
 
-    from sglang.srt.plugins.hook_registry import HookSource, _current_plugin_source
-
     for name, (func, dist_name) in plugins.items():
         source = HookSource(plugin_name=name, dist_name=dist_name)
         token = _current_plugin_source.set(source)
@@ -137,6 +138,4 @@ def load_plugins():
             _current_plugin_source.reset(token)
 
     # Apply all registered hooks (idempotent — already-patched targets are skipped).
-    from sglang.srt.plugins.hook_registry import HookRegistry
-
     HookRegistry.apply_hooks()
