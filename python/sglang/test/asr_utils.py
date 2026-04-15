@@ -1,5 +1,6 @@
 """Shared utilities and test mixin for ASR (transcription) tests."""
 
+import unittest
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -61,6 +62,9 @@ class ASRTestBase(CustomTestCase):
 
     @classmethod
     def setUpClass(cls):
+        if cls is ASRTestBase:
+            raise unittest.SkipTest("ASRTestBase is an abstract base class")
+
         cls.base_url = DEFAULT_URL_FOR_TEST
         other_args = [
             "--served-model-name",
