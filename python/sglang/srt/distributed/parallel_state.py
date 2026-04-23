@@ -1585,6 +1585,26 @@ _DEVICE_TO_DISTRIBUTED_BACKEND = {
 
 
 def get_default_distributed_backend(device: str) -> str:
+    from sglang.srt.platforms import current_platform
+
+    # Only trust the active platform's backend when the caller's requested
+    # device actually matches it. This keeps callers that explicitly ask for a
+    # different device (e.g. an auxiliary "cpu"/gloo coordination group on a
+    # CUDA process) on the dict path.
+    if device == current_platform.device_type:
+        try:
+            return current_platform.get_torch_distributed_backend_str()
+        except NotImplementedError:
+            # TODO: Refactor in-tree platforms to override this method.
+            # Fall through to the device->backend table below for now.
+            pass
+        except Exception as e:
+            logger.warning(
+                "current_platform.get_torch_distributed_backend_str() failed for %s: %s. "
+                "Falling back to _DEVICE_TO_DISTRIBUTED_BACKEND.",
+                device,
+                e,
+            )
     return _DEVICE_TO_DISTRIBUTED_BACKEND.get(device, "gloo")
 
 
