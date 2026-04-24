@@ -68,6 +68,7 @@ from sglang.srt.utils import (
     get_bool_env_var,
     is_cpu,
     is_cuda,
+    is_gfx95_supported,
     is_hip,
     is_npu,
     is_sm90_supported,
@@ -91,6 +92,7 @@ _is_cpu = is_cpu()
 _is_fp8_fnuz = is_fp8_fnuz()
 _use_hip_int4 = get_bool_env_var("SGLANG_INT4_WEIGHT") and _is_hip
 _use_aiter = envs.SGLANG_USE_AITER.get() and _is_hip
+_is_shuffle_moe_mxfp4 = is_gfx95_supported()
 
 
 def _use_aiter_moe() -> bool:
@@ -100,10 +102,20 @@ def _use_aiter_moe() -> bool:
     return _use_aiter and not envs.SGLANG_FORCE_TRITON_MOE_FP8.get()
 
 
+def _require_fp4_dtype():
+    fp4_dtype = getattr(torch, "float4_e2m1fn_x2", None)
+    if fp4_dtype is None:
+        raise RuntimeError(
+            "DeepSeek-V4 FP4 experts require torch.float4_e2m1fn_x2 support."
+        )
+    return fp4_dtype
+
+
 if _use_aiter or _use_hip_int4:
     from aiter import ActivationType, QuantType
     from aiter.fused_moe import fused_moe
     from aiter.ops.shuffle import shuffle_weight
+    from aiter.utility.fp4_utils import e8m0_shuffle
 
 
 ACTIVATION_SCHEMES = ["static", "dynamic"]
@@ -750,12 +762,15 @@ class Fp8MoEMethod(FusedMoEMethodBase):
 
             # FP4: per-row on N, per-32 on K
             fp4_block_k = 32
+            fp4_scale_dtype = (
+                torch.float8_e8m0fnu if _use_aiter_moe() else torch.float32
+            )
             w13_weight_scale = torch.nn.Parameter(
                 torch.ones(
                     num_experts,
                     2 * intermediate_size_per_partition,
                     hidden_size // fp4_block_k,
-                    dtype=torch.float32,
+                    dtype=fp4_scale_dtype,
                 ),
                 requires_grad=False,
             )
@@ -764,7 +779,7 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                     num_experts,
                     hidden_size,
                     intermediate_size_per_partition // fp4_block_k,
-                    dtype=torch.float32,
+                    dtype=fp4_scale_dtype,
                 ),
                 requires_grad=False,
             )
@@ -873,6 +888,30 @@ class Fp8MoEMethod(FusedMoEMethodBase):
             layer.w2_input_scale = None
 
     def process_weights_after_loading_block_quant(self, layer: Module) -> None:
+        if _use_aiter_moe() and self.is_fp4_expert:
+            fp4_weight_dtype = _require_fp4_dtype()
+            for scale_name in ("w13_weight_scale_inv", "w2_weight_scale_inv"):
+                scale = getattr(layer, scale_name)
+                num_experts, num_rows, _ = scale.shape
+                scale.data = e8m0_shuffle(scale.view(num_experts * num_rows, -1)).view(
+                    num_experts, num_rows, -1
+                )
+
+            layer.w13_weight.data = layer.w13_weight.data.view(fp4_weight_dtype)
+            layer.w2_weight.data = layer.w2_weight.data.view(fp4_weight_dtype)
+
+            is_shuffled = _is_shuffle_moe_mxfp4
+            if is_shuffled:
+                layer.w13_weight.data = shuffle_weight(
+                    layer.w13_weight.contiguous(), (16, 16)
+                )
+                layer.w2_weight.data = shuffle_weight(
+                    layer.w2_weight.contiguous(), (16, 16)
+                )
+            layer.w13_weight.is_shuffled = is_shuffled
+            layer.w2_weight.is_shuffled = is_shuffled
+            return
+
         # If ROCm, normalize the weights and scales to e4m3fnuz
         if _is_fp8_fnuz:
             # activation_scheme: dynamic
@@ -931,8 +970,11 @@ class Fp8MoEMethod(FusedMoEMethodBase):
             will_use_deepgemm = self.is_deepgemm_moe_runner_backend_enabled()
 
             if self.is_fp4_expert:
-                layer.w13_weight.data = layer.w13_weight.data.view(torch.uint8)
-                layer.w2_weight.data = layer.w2_weight.data.view(torch.uint8)
+                fp4_weight_dtype = (
+                    _require_fp4_dtype() if _use_aiter_moe() else torch.uint8
+                )
+                layer.w13_weight.data = layer.w13_weight.data.view(fp4_weight_dtype)
+                layer.w2_weight.data = layer.w2_weight.data.view(fp4_weight_dtype)
 
                 # Pre-convert FP4 weight scales from FP32 to UE8M0 packed INT32 at init time,
                 # eliminating the runtime transpose_and_pack_fp32_into_ue8m0 kernel in deep_gemm.
@@ -1480,6 +1522,7 @@ class Fp8MoEMethod(FusedMoEMethodBase):
 
         if _use_aiter_moe():
             assert not no_combine, f"{no_combine=} is not supported."
+            topk_weights = topk_weights.to(torch.float32)
             # Keep deepseek_v4.py's per-layer "observed == 1" sanity check in sync
             # when the aiter dispatch bypasses the Triton/deep_gemm clamp logic.
             if envs.SGLANG_DSV4_2604_SUBMODE.get() == "2604B":
@@ -1489,15 +1532,27 @@ class Fp8MoEMethod(FusedMoEMethodBase):
 
                 deepseek_v4_moe_code_path_checker.observed += 1
             if self.block_quant:
+                quant_type = (
+                    QuantType.per_1x32 if self.is_fp4_expert else QuantType.per_128x128
+                )
+                w13_weight = layer.w13_weight
+                w2_weight = layer.w2_weight
+                if self.is_fp4_expert:
+                    fp4_weight_dtype = _require_fp4_dtype()
+                    w13_weight = w13_weight.view(fp4_weight_dtype)
+                    w2_weight = w2_weight.view(fp4_weight_dtype)
+                    if getattr(layer.w13_weight, "is_shuffled", False):
+                        w13_weight.is_shuffled = True
+                        w2_weight.is_shuffled = True
                 return fused_moe(
                     x,
-                    layer.w13_weight,
-                    layer.w2_weight,
+                    w13_weight,
+                    w2_weight,
                     topk_weights,
                     topk_ids,
                     w1_scale=layer.w13_weight_scale_inv,
                     w2_scale=layer.w2_weight_scale_inv,
-                    quant_type=QuantType.per_128x128,
+                    quant_type=quant_type,
                     activation=(
                         ActivationType.Silu
                         if activation == "silu"

@@ -6,6 +6,7 @@ Popular Model Usage (DeepSeek, GPT-OSS, GLM, Llama, MiniMax, Qwen, and more)
 
    deepseek_v3.md
    deepseek_v32.md
+   deepseek_v4.md
    glm45.md
    glmv.md
    gpt_oss.md

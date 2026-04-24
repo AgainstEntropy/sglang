@@ -1,5 +1,19 @@
-from . import bench, compare, generate, precision, utils
-from .bench import bench_by_cuda_events, bench_kineto
+from . import compare, generate, precision, utils
+
+try:
+    from . import bench
+    from .bench import bench_by_cuda_events, bench_kineto
+except ImportError:
+    bench = None
+
+    def bench_by_cuda_events(*args, **kwargs):
+        raise NotImplementedError(
+            "bench_by_cuda_events is not available in this build"
+        )
+
+    def bench_kineto(*args, **kwargs):
+        raise NotImplementedError("bench_kineto is not available in this build")
+
 from .compare import (
     check_is_allclose,
     check_is_allclose_comparator,
