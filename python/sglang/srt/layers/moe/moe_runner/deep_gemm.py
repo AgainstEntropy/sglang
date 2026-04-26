@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import einops
 import torch
 
 from sglang.jit_kernel.deepseek_v4 import silu_and_mul_masked_post_quant
-from sglang.srt.debug_utils.deepseek_v4_debug_utils import deepseek_v4_moe_code_path_checker
+from sglang.srt.debug_utils.deepseek_v4_debug_utils import (
+    deepseek_v4_moe_code_path_checker,
+)
 from sglang.srt.environ import envs
 from sglang.srt.layers import deep_gemm_wrapper
 from sglang.srt.layers.moe.moe_runner.base import (
@@ -20,7 +22,15 @@ from sglang.srt.layers.moe.moe_runner.base import (
     register_pre_permute,
 )
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
-from sglang.srt.utils import ceil_div, dispose_tensor, get_bool_env_var, is_hip, is_npu
+from sglang.srt.utils import (
+    ceil_div,
+    dispose_tensor,
+    get_bool_env_var,
+    is_cuda,
+    is_hip,
+    is_musa,
+    is_npu,
+)
 from sglang.srt.utils.offloader import get_offloader
 
 if TYPE_CHECKING:
@@ -37,10 +47,12 @@ if TYPE_CHECKING:
 
 _is_hip = is_hip()
 _is_npu = is_npu()
+_is_cuda = is_cuda()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
+_is_musa = is_musa()
 
-if not (_is_npu or _is_hip):
-    from sgl_kernel import silu_and_mul
+if not (_is_npu or _is_hip) and _is_cuda:
+    from sglang.jit_kernel.activation import silu_and_mul
 
 
 _MASKED_GEMM_FAST_ACT = get_bool_env_var("SGLANG_MASKED_GEMM_FAST_ACT")
@@ -117,6 +129,7 @@ class DeepGemmRunnerCore(MoeRunnerCore):
         runner_input: DeepGemmRunnerInput,
         quant_info: DeepGemmMoeQuantInfo,
         running_state: dict,
+        hooks: Optional[Any] = None,
     ) -> DeepGemmRunnerOutput:
         if not runner_input.use_masked_gemm:
             hidden_states = self._run_contiguous_gemm(
@@ -163,8 +176,9 @@ class DeepGemmRunnerCore(MoeRunnerCore):
             device=hidden_states_device,
             dtype=torch.bfloat16,
         )
-        if not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0:
+        if deep_gemm_wrapper.DEEPGEMM_NEED_TMA_ALIGNED_SCALES:
             hidden_states_scale = tma_align_input_scale(hidden_states_scale)
+
         deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
             (hidden_states, hidden_states_scale),
             w13_weight_fp8,
@@ -176,7 +190,9 @@ class DeepGemmRunnerCore(MoeRunnerCore):
         dispose_tensor(hidden_states_scale)
 
         if envs.SGLANG_DSV4_2604_SUBMODE.get() == "2604B":
-            gateup_output = _apply_swiglu_limit(gateup_output, swiglu_limit=self.swiglu_limit)
+            gateup_output = _apply_swiglu_limit(
+                gateup_output, swiglu_limit=self.swiglu_limit
+            )
             deepseek_v4_moe_code_path_checker.observed += 1
 
         down_input = torch.empty(
@@ -204,7 +220,7 @@ class DeepGemmRunnerCore(MoeRunnerCore):
             device=hidden_states_device,
             dtype=torch.bfloat16,
         )
-        if not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0:
+        if deep_gemm_wrapper.DEEPGEMM_NEED_TMA_ALIGNED_SCALES:
             down_input_scale = tma_align_input_scale(down_input_scale)
 
         deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
@@ -246,7 +262,7 @@ class DeepGemmRunnerCore(MoeRunnerCore):
                 hidden_states_scale = _cast_to_e8m0_with_rounding_up(
                     hidden_states_scale
                 )
-        else:
+        elif deep_gemm_wrapper.DEEPGEMM_NEED_TMA_ALIGNED_SCALES:
             hidden_states_scale = deep_gemm_wrapper.get_mn_major_tma_aligned_tensor(
                 hidden_states_scale
             )
@@ -267,22 +283,31 @@ class DeepGemmRunnerCore(MoeRunnerCore):
         dispose_tensor(hidden_states_scale)
 
         is_2604b = envs.SGLANG_DSV4_2604_SUBMODE.get() == "2604B"
-        assert is_2604b == (self.swiglu_limit is not None), \
-            f"swiglu_limit must be non-None iff submode=2604B (got submode={envs.SGLANG_DSV4_2604_SUBMODE.get()!r}, swiglu_limit={self.swiglu_limit!r})"
+        assert is_2604b == (
+            self.swiglu_limit is not None
+        ), f"swiglu_limit must be non-None iff submode=2604B (got submode={envs.SGLANG_DSV4_2604_SUBMODE.get()!r}, swiglu_limit={self.swiglu_limit!r})"
 
         swiglu_limit_arg: Optional[float] = None
         if is_2604b:
-            assert not _MASKED_GEMM_FAST_ACT, \
-                "DSV4 2604 submode 2604B does not support SGLANG_MASKED_GEMM_FAST_ACT"
-            assert envs.SGLANG_OPT_USE_JIT_EP_ACTIVATION.get(), \
-                "DSV4 2604 submode 2604B requires SGLANG_OPT_USE_JIT_EP_ACTIVATION=True"
+            assert (
+                not _MASKED_GEMM_FAST_ACT
+            ), "DSV4 2604 submode 2604B does not support SGLANG_MASKED_GEMM_FAST_ACT"
+            assert (
+                envs.SGLANG_OPT_USE_JIT_EP_ACTIVATION.get()
+            ), "DSV4 2604 submode 2604B requires SGLANG_OPT_USE_JIT_EP_ACTIVATION=True"
 
             if envs.SGLANG_OPT_SWIGLU_CLAMP_FUSION.get():
                 swiglu_limit_arg = self.swiglu_limit
             else:
-                gateup_output = einops.rearrange(gateup_output, 'grp tok hidden -> (grp tok) hidden')
-                gateup_output = _apply_swiglu_limit(gateup_output, swiglu_limit=self.swiglu_limit)
-                gateup_output = einops.rearrange(gateup_output, '(grp tok) hidden -> grp tok hidden', grp=num_groups)
+                gateup_output = einops.rearrange(
+                    gateup_output, "grp tok hidden -> (grp tok) hidden"
+                )
+                gateup_output = _apply_swiglu_limit(
+                    gateup_output, swiglu_limit=self.swiglu_limit
+                )
+                gateup_output = einops.rearrange(
+                    gateup_output, "(grp tok) hidden -> grp tok hidden", grp=num_groups
+                )
                 deepseek_v4_moe_code_path_checker.observed += 1
 
         # Act
@@ -298,7 +323,7 @@ class DeepGemmRunnerCore(MoeRunnerCore):
         # GroupGemm-1
         n = w2_weight.shape[1]
 
-        if not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0:
+        if deep_gemm_wrapper.DEEPGEMM_NEED_TMA_ALIGNED_SCALES:
             down_input_scale = deep_gemm_wrapper.get_mn_major_tma_aligned_tensor(
                 down_input_scale
             )
@@ -609,8 +634,9 @@ def _varlen_deep_gemm_silu_mul_quant(
     )
 
     if _MASKED_GEMM_FAST_ACT:
-        assert swiglu_limit is None, \
-            "swiglu_limit (DSV4 2604 submode 2604B) is not supported together with SGLANG_MASKED_GEMM_FAST_ACT"
+        assert (
+            swiglu_limit is None
+        ), "swiglu_limit (DSV4 2604 submode 2604B) is not supported together with SGLANG_MASKED_GEMM_FAST_ACT"
         return sglang_per_token_group_quant_8bit(
             x=gateup_output,
             dst_dtype=torch.float8_e4m3fn,
@@ -655,8 +681,9 @@ def _varlen_deep_gemm_silu_mul_quant(
         )
         down_input_scale = down_input_scale.transpose(-1, -2)
     else:
-        assert swiglu_limit is None, \
-            "swiglu_limit (DSV4 2604 submode 2604B) requires SGLANG_OPT_USE_JIT_EP_ACTIVATION=True"
+        assert (
+            swiglu_limit is None
+        ), "swiglu_limit (DSV4 2604 submode 2604B) requires SGLANG_OPT_USE_JIT_EP_ACTIVATION=True"
         down_input_scale = torch.empty(
             (E, N, G),
             device=hidden_states_device,
@@ -675,7 +702,9 @@ def _varlen_deep_gemm_silu_mul_quant(
 
 # TODO: it the weight non-interleaved?
 # TODO: also, is the weight gate first, up later?
-def _apply_swiglu_limit(gateup_output: torch.Tensor, swiglu_limit: float) -> torch.Tensor:
+def _apply_swiglu_limit(
+    gateup_output: torch.Tensor, swiglu_limit: float
+) -> torch.Tensor:
     assert swiglu_limit == 10
 
     num_tokens, hidden_size_x2 = gateup_output.shape

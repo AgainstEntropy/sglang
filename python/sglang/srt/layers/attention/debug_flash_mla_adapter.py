@@ -2,8 +2,9 @@ from typing import Any, Optional
 
 import torch
 
-from sglang.srt.utils import is_hip
 from sglang.srt.layers.quantization.fp8_kernel import is_fp8_fnuz
+from sglang.srt.utils import is_hip
+
 FP8_DTYPE = torch.float8_e4m3fnuz if is_fp8_fnuz() else torch.float8_e4m3fn
 
 
@@ -11,6 +12,10 @@ def flash_mla_with_kvcache_entrypoint(backend: str, **kwargs):
     if is_hip():
         # backend == "torch"
         import os
+
+        from sglang.srt.layers.attention.nsa.tilelang_kernel import (
+            dpsk_v4_bf16_sparse_attention_fwd,
+        )
 
         backend = os.environ.get("SGLANG_HACK_FLASHMLA_BACKEND", "kernel")
     else:
@@ -30,6 +35,9 @@ def flash_mla_with_kvcache_entrypoint(backend: str, **kwargs):
 
     if backend == "torch":
         return flash_mla_with_kvcache_torch(**kwargs)
+
+    if backend == "tilelang":
+        return dpsk_v4_bf16_sparse_attention_fwd(**kwargs)
 
     if backend == "kernel":
         return flash_mla.flash_mla_with_kvcache(**kwargs)
