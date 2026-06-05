@@ -234,12 +234,6 @@ class SamplingParams:
     # Prompt enhancement (ErnieImage)
     use_pe: bool | None = None
 
-    # Realtime serving (camera-control session): per-chunk condition inputs
-    # (camera actions, intrinsics) and the latent frames-per-chunk size, threaded
-    # to the realtime stage. Empty/None for non-realtime requests.
-    condition_inputs: dict[str, Any] = field(default_factory=dict)
-    realtime_chunk_size: int | None = None
-
     def _set_output_file_ext(self):
         # add extension if needed
         if not any(
@@ -318,7 +312,6 @@ class SamplingParams:
     def apply_request_extra(self, req: Any) -> None:
         """Merge request extras (model specific, e.g., LTX2.3) into an already-created pipeline request."""
         req.extra.update(self.build_request_extra())
-        # Realtime serving: thread per-chunk camera conditions + chunk size to the Req.
         if self.condition_inputs:
             req.condition_inputs.update(self.condition_inputs)
         if self.realtime_chunk_size is not None:
@@ -543,13 +536,13 @@ class SamplingParams:
         if self.enable_sequence_shard:
             self.adjust_frames = False
             logger.info(
-                "Sequence dimension shard is enabled, disabling frame adjustment for better performance"
+                f"Sequence dimension shard is enabled, disabling frame adjustment for better performance"
             )
 
         if pipeline_config.task_type.is_image_gen():
             # settle num_frames
             if not server_args.pipeline_config.allow_set_num_frames():
-                logger.debug("Setting `num_frames` to 1 for image generation model")
+                logger.debug(f"Setting `num_frames` to 1 for image generation model")
                 self.num_frames = 1
 
         else:
@@ -1084,15 +1077,15 @@ class SamplingParams:
 
         # global switch: if True, allow overriding protected fields
         allow_override_protected = not user_params.no_override_protected_fields
-        for param_field in dataclasses.fields(user_params):
-            field_name = param_field.name
+        for field in dataclasses.fields(user_params):
+            field_name = field.name
             user_value = getattr(user_params, field_name)
             if hasattr(SamplingParams, field_name):
                 default_class_value = getattr(SamplingParams, field_name)
-            elif param_field.default is not dataclasses.MISSING:
-                default_class_value = param_field.default
-            elif param_field.default_factory is not dataclasses.MISSING:
-                default_class_value = param_field.default_factory()
+            elif field.default is not dataclasses.MISSING:
+                default_class_value = field.default
+            elif field.default_factory is not dataclasses.MISSING:
+                default_class_value = field.default_factory()
             else:
                 default_class_value = dataclasses.MISSING
 

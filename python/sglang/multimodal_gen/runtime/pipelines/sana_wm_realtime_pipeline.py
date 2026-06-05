@@ -49,8 +49,8 @@ class SanaWMRealtimePipeline(SanaWMTwoStagePipeline):
 
     pipeline_name = "SanaWMRealtimePipeline"
     is_video_pipeline = True
-    # Must be the realtime config so has_realtime_model_adapter() matches and
-    # the /v1/realtime_video WS router mounts (registry keys on SanaWMRealtimeConfig).
+    # Must be the realtime config so get_realtime_model_adapter() resolves the
+    # SANA-WM adapter (the realtime registry keys on SanaWMRealtimeConfig).
     pipeline_config_cls = SanaWMRealtimeConfig
 
     def _resolve_component_path(
