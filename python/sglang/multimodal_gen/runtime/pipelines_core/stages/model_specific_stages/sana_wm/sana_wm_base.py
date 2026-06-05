@@ -40,7 +40,11 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
-from .utils import action_string_to_c2w, parse_action_string
+from .utils import (
+    action_string_to_c2w,
+    compute_resize_crop_geometry,
+    parse_action_string,
+)
 
 logger = init_logger(__name__)
 
@@ -60,6 +64,74 @@ _SANA_WM_CONDITION_IMAGE_PREPROCESS_KEY = "sana_wm_condition_image_preprocess"
 # canonical, official-matching implementation); the old in-house duplicate body
 # is gone, the public name stays for existing callers/tests.
 parse_sana_wm_action_string = parse_action_string
+
+
+def sana_wm_vae_scaling_factor(vae, pipeline_config) -> float:
+    """Resolve the VAE scaling factor (batch-reference precedence).
+
+    vae.config.scaling_factor -> vae.scaling_factor ->
+    pipeline_config.vae_config.arch_config.scaling_factor -> 1.0; zero is
+    treated as unset. Single source for both the batch and realtime
+    first-frame encode paths.
+    """
+    scaling_factor = (
+        getattr(getattr(vae, "config", None), "scaling_factor", None)
+        or getattr(vae, "scaling_factor", None)
+        or getattr(
+            getattr(getattr(pipeline_config, "vae_config", None), "arch_config", None),
+            "scaling_factor",
+            None,
+        )
+        or 1.0
+    )
+    if isinstance(scaling_factor, torch.Tensor):
+        return float(scaling_factor.item())
+    scaling_factor = float(scaling_factor)
+    return 1.0 if scaling_factor == 0.0 else scaling_factor
+
+
+def sana_wm_normalize_vae_latents(
+    vae, z: torch.Tensor, pipeline_config
+) -> torch.Tensor:
+    """Normalize freshly-encoded VAE latents (batch-reference semantics).
+
+    ``(z - latents_mean) * scaling_factor / latents_std`` when the VAE carries
+    mean/std buffers (the LTX-2 causal VAE does); legacy shift-then-scale
+    otherwise. ``z`` is expected in float32 (the batch path's fp32
+    normalization — drifting this was parity root cause #2). Single source for
+    both the batch and realtime first-frame encode paths.
+    """
+    latents_mean = getattr(vae, "latents_mean", None)
+    latents_std = getattr(vae, "latents_std", None)
+    scaling_factor = sana_wm_vae_scaling_factor(vae, pipeline_config)
+    if sana_wm_diagnostics_enabled():
+        logger.info(
+            "[SANA-WM diagnostics] VAE encode normalization: "
+            "has_latents_mean_std=%s scaling_factor=%.6g",
+            isinstance(latents_mean, torch.Tensor)
+            and isinstance(latents_std, torch.Tensor),
+            scaling_factor,
+        )
+    if isinstance(latents_mean, torch.Tensor) and isinstance(
+        latents_std, torch.Tensor
+    ):
+        latents_mean = latents_mean.to(device=z.device, dtype=z.dtype).view(
+            1, -1, 1, 1, 1
+        )
+        latents_std = latents_std.to(device=z.device, dtype=z.dtype).view(
+            1, -1, 1, 1, 1
+        )
+        return (z - latents_mean) * scaling_factor / latents_std
+
+    # Legacy VAE convention: encode applies shift before scaling.
+    shift_factor = getattr(vae, "shift_factor", None)
+    if shift_factor is not None:
+        z = z - (
+            shift_factor.to(z.device, z.dtype)
+            if isinstance(shift_factor, torch.Tensor)
+            else shift_factor
+        )
+    return z * scaling_factor
 
 
 def sana_wm_action_to_camera_to_world(
@@ -837,37 +909,7 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
             vae = active_vae if active_vae is not None else vae
             z = self._extract_vae_latents(vae.encode(image)).float()
 
-        latents_mean = getattr(vae, "latents_mean", None)
-        latents_std = getattr(vae, "latents_std", None)
-        scaling_factor = self._get_vae_scaling_factor(vae)
-        if sana_wm_diagnostics_enabled():
-            logger.info(
-                "[SANA-WM diagnostics] VAE encode normalization: "
-                "has_latents_mean_std=%s scaling_factor=%.6g",
-                isinstance(latents_mean, torch.Tensor)
-                and isinstance(latents_std, torch.Tensor),
-                scaling_factor,
-            )
-        if isinstance(latents_mean, torch.Tensor) and isinstance(
-            latents_std, torch.Tensor
-        ):
-            latents_mean = latents_mean.to(device=z.device, dtype=z.dtype).view(
-                1, -1, 1, 1, 1
-            )
-            latents_std = latents_std.to(device=z.device, dtype=z.dtype).view(
-                1, -1, 1, 1, 1
-            )
-            z = (z - latents_mean) * scaling_factor / latents_std
-        else:
-            # Legacy VAE convention: encode applies shift before scaling.
-            shift_factor = getattr(vae, "shift_factor", None)
-            if shift_factor is not None:
-                z = z - (
-                    shift_factor.to(z.device, z.dtype)
-                    if isinstance(shift_factor, torch.Tensor)
-                    else shift_factor
-                )
-            z = z * scaling_factor
+        z = sana_wm_normalize_vae_latents(vae, z, self.pipeline_config)
 
         log_sana_wm_tensor_stats("first_frame.latent_normalized", z)
         return z.to(dtype=dtype)  # (1, 128, 1, H_sp, W_sp)
@@ -897,20 +939,7 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
         )
 
     def _get_vae_scaling_factor(self, vae) -> float:
-        scaling_factor = (
-            getattr(getattr(vae, "config", None), "scaling_factor", None)
-            or getattr(vae, "scaling_factor", None)
-            or getattr(
-                self.pipeline_config.vae_config.arch_config,
-                "scaling_factor",
-                None,
-            )
-            or 1.0
-        )
-        if isinstance(scaling_factor, torch.Tensor):
-            return float(scaling_factor.item())
-        scaling_factor = float(scaling_factor)
-        return 1.0 if scaling_factor == 0.0 else scaling_factor
+        return sana_wm_vae_scaling_factor(vae, self.pipeline_config)
 
     # -----------------------------------------------------------------------
     # Helper: initialize noise latents
@@ -1030,9 +1059,9 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
         """Match official SANA-WM resize-then-center-crop preprocessing."""
         image = SanaWMBeforeDenoisingStage._canonical_condition_image_tensor(image)
         src_h, src_w = int(image.shape[-2]), int(image.shape[-1])
-        scale = max(target_h / float(src_h), target_w / float(src_w))
-        resized_w = max(target_w, int(round(src_w * scale)))
-        resized_h = max(target_h, int(round(src_h * scale)))
+        resized_w, resized_h, left, top = compute_resize_crop_geometry(
+            src_w, src_h, target_h, target_w
+        )
         if resized_h != src_h or resized_w != src_w:
             import torch.nn.functional as F
 
@@ -1042,8 +1071,6 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
                 mode="bilinear",
                 align_corners=False,
             )
-        left = (resized_w - target_w) // 2
-        top = (resized_h - target_h) // 2
         image = image[..., top : top + target_h, left : left + target_w].contiguous()
         return image, {
             "source_size": (src_w, src_h),
@@ -1075,9 +1102,9 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
 
             image = condition_image.convert("RGB")
             src_w, src_h = image.size
-            scale = max(target_h / float(src_h), target_w / float(src_w))
-            resized_w = max(target_w, int(round(src_w * scale)))
-            resized_h = max(target_h, int(round(src_h * scale)))
+            resized_w, resized_h, left, top = compute_resize_crop_geometry(
+                src_w, src_h, target_h, target_w
+            )
             resampling_enum = getattr(PIL.Image, "Resampling", None)
             resampling = (
                 resampling_enum.LANCZOS
@@ -1085,8 +1112,6 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
                 else PIL.Image.LANCZOS
             )
             image = image.resize((resized_w, resized_h), resampling)
-            left = (resized_w - target_w) // 2
-            top = (resized_h - target_h) // 2
             image = image.crop((left, top, left + target_w, top + target_h))
             return TF.to_tensor(image).unsqueeze(0), {
                 "source_size": (src_w, src_h),

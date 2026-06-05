@@ -36,6 +36,7 @@ from .sana_wm_base import (
     _SANA_WM_DEFAULT_TRANSLATION_SPEED,
     SanaWMBeforeDenoisingStage,
     configure_sana_wm_ltx2_vae_for_long_video,
+    sana_wm_normalize_vae_latents,
 )
 from sglang.multimodal_gen.runtime.models.dits.sana_wm_components import (
     compute_chunk_plucker,
@@ -65,7 +66,6 @@ from .utils import (
     pil_to_model_tensor,
     resize_and_center_crop,
     snap_num_frames,
-    transform_intrinsics_for_crop,
 )
 
 logger = init_logger(__name__)
@@ -169,38 +169,6 @@ def _motion_param(batch: Req, name: str, default: float) -> float:
     if value is None:
         value = batch.extra.get(f"sana_wm_{name}", default)
     return float(value)
-
-
-def _vae_scaling_factor(vae: torch.nn.Module) -> float | torch.Tensor:
-    config = getattr(vae, "config", None)
-    arch = getattr(config, "arch_config", None)
-    value = getattr(arch, "scaling_factor", None)
-    if value is None:
-        value = getattr(config, "scaling_factor", None)
-    is_zero = False
-    if isinstance(value, torch.Tensor):
-        is_zero = bool(value.numel() == 1 and value.item() == 0)
-    elif value is not None:
-        is_zero = value == 0
-    if value is None or is_zero:
-        value = getattr(vae, "scaling_factor", 1.0)
-    return value
-
-
-def _vae_stats(
-    vae: torch.nn.Module,
-    tensor: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    channels = int(tensor.shape[1])
-    mean = getattr(vae, "latents_mean", None)
-    std = getattr(vae, "latents_std", None)
-    if mean is None:
-        mean = torch.zeros(channels, device=tensor.device, dtype=tensor.dtype)
-    if std is None:
-        std = torch.ones(channels, device=tensor.device, dtype=tensor.dtype)
-    mean = mean.view(1, -1, 1, 1, 1).to(tensor.device, tensor.dtype)
-    std = std.view(1, -1, 1, 1, 1).to(tensor.device, tensor.dtype)
-    return mean, std
 
 
 class SanaWMStreamingState(BaseRealtimeState):
@@ -467,18 +435,14 @@ class SanaWMRealtimeStage(PipelineStage):
             device=device,
         )
         state.intrinsics_raw = intrinsics_raw
-        intrinsics = transform_intrinsics_for_crop(
-            intrinsics_raw,
-            state.src_size,
-            state.resized_size,
-            state.crop_offset,
-        )
         # Build raymap + chunk_plucker through the SAME helpers (and on the same
         # device) as the batch path's _build_camera_conditioning, instead of the
         # equivalent-but-separate utils.prepare_camera_conditions (since removed):
         # the two implementations agreed only to ~1-2 bf16 ulps on some frames, and
         # that seed amplifies to %-level stage-1 drift through the bf16 block stack
         # across chunks (measured: plucker_emb 1.7e-7 -> chunk>=2 1.3-4% relRMS).
+        # The intrinsics crop transform goes through the batch static helper too
+        # (the numpy twin utils.transform_intrinsics_for_crop is gone).
         vae_time_stride = 8
         latent_h = SANA_WM_HEIGHT // 32
         latent_w = SANA_WM_WIDTH // 32
@@ -489,9 +453,19 @@ class SanaWMRealtimeStage(PipelineStage):
             .to(device=device, dtype=torch.float32)
         )
         intrinsics_vec4 = (
-            torch.from_numpy(np.asarray(intrinsics, dtype=np.float32))
+            torch.from_numpy(np.asarray(intrinsics_raw, dtype=np.float32))
             .unsqueeze(0)
             .to(device=device, dtype=torch.float32)
+        )
+        intrinsics_vec4 = (
+            SanaWMBeforeDenoisingStage._transform_intrinsics_for_condition_image(
+                intrinsics_vec4,
+                {
+                    "source_size": state.src_size,
+                    "resized_size": state.resized_size,
+                    "crop_offset": state.crop_offset,
+                },
+            )
         )
         rel_poses = SanaWMBeforeDenoisingStage._relative_camera_poses(camera_to_world)
         intrinsics_latent = SanaWMBeforeDenoisingStage._scale_intrinsics_to_latent(
@@ -533,14 +507,16 @@ class SanaWMRealtimeStage(PipelineStage):
             self.vae.enable_tiling()
         image_tensor = pil_to_model_tensor(image, device=device, dtype=vae_dtype)
         with _deterministic_vae_encode_context():
-            posterior = self.vae.encode(image_tensor.to(device=device, dtype=vae_dtype)).latent_dist
-            # float32 normalization, matching the batch path's
-            # SanaWMBeforeDenoisingStage._vae_encode_image (z.float() before
-            # mean/std math) so the cond latent is bit-identical across paths.
-            z = posterior.mode().float()
-        mean, std = _vae_stats(self.vae, z)
-        scaling_factor = _vae_scaling_factor(self.vae)
-        z = (z - mean) * scaling_factor / std
+            # Extract + fp32-normalize through the SAME shared core as the
+            # batch path's _vae_encode_image (single source — drifting this
+            # was parity root cause #2; the old in-house mean/std + scaling
+            # resolver duo is gone).
+            z = SanaWMBeforeDenoisingStage._extract_vae_latents(
+                self.vae.encode(image_tensor.to(device=device, dtype=vae_dtype))
+            ).float()
+        z = sana_wm_normalize_vae_latents(
+            self.vae, z, getattr(self, "_pipeline_config", None)
+        )
         return z.to(device=device, dtype=latent_dtype)
 
     def _first_frame_cache_key(
@@ -1008,6 +984,9 @@ class SanaWMRealtimeStage(PipelineStage):
         # Same LTX-2 tiling/framewise knobs the batch path applies before every
         # VAE use (encode + decode), so the cond-frame encode matches bitwise.
         configure_sana_wm_ltx2_vae_for_long_video(self.vae, server_args.pipeline_config)
+        # Stashed for _encode_first_frame's shared scaling-factor resolution
+        # (forward() always runs before the session-init encode).
+        self._pipeline_config = server_args.pipeline_config
         batch.enable_sequence_shard = int(server_args.sp_degree or 1) > 1
 
         with set_forward_context(

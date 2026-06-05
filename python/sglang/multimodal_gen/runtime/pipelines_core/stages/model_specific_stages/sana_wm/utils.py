@@ -233,6 +233,23 @@ def _rot_y(angle_rad: float) -> np.ndarray:
     return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float64)
 
 
+def compute_resize_crop_geometry(
+    src_w: int, src_h: int, target_h: int, target_w: int
+) -> tuple[int, int, int, int]:
+    """Aspect-preserving resize + center-crop geometry (pure integer math).
+
+    Single source for the three resize/crop implementations (utils PIL path,
+    batch PIL path, batch tensor path) — returns
+    ``(resized_w, resized_h, left, top)``.
+    """
+    scale = max(target_h / float(src_h), target_w / float(src_w))
+    resized_w = max(target_w, int(round(src_w * scale)))
+    resized_h = max(target_h, int(round(src_h * scale)))
+    left = (resized_w - target_w) // 2
+    top = (resized_h - target_h) // 2
+    return resized_w, resized_h, left, top
+
+
 def normalize_camera_actions(
     payload: Any,
     *,
@@ -439,33 +456,16 @@ def resize_and_center_crop(
     target_w: int = TARGET_WIDTH,
 ) -> tuple[Image.Image, tuple[int, int], tuple[int, int], tuple[int, int]]:
     src_w, src_h = image.size
-    scale = max(target_h / src_h, target_w / src_w)
-    resized_w = max(target_w, int(round(src_w * scale)))
-    resized_h = max(target_h, int(round(src_h * scale)))
+    resized_w, resized_h, left, top = compute_resize_crop_geometry(
+        src_w, src_h, target_h, target_w
+    )
     resized = image.resize((resized_w, resized_h), Image.LANCZOS)
-    left = (resized_w - target_w) // 2
-    top = (resized_h - target_h) // 2
     crop = resized.crop((left, top, left + target_w, top + target_h))
     return crop, (src_w, src_h), (resized_w, resized_h), (left, top)
 
 
-def transform_intrinsics_for_crop(
-    intrinsics: np.ndarray,
-    src_size: tuple[int, int],
-    resized_size: tuple[int, int],
-    crop_offset: tuple[int, int],
-) -> np.ndarray:
-    src_w, src_h = src_size
-    resized_w, resized_h = resized_size
-    crop_left, crop_top = crop_offset
-    sx = resized_w / src_w
-    sy = resized_h / src_h
-    out = intrinsics.copy()
-    out[..., 0] *= sx
-    out[..., 2] = out[..., 2] * sx - crop_left
-    out[..., 1] *= sy
-    out[..., 3] = out[..., 3] * sy - crop_top
-    return out
+# NOTE: the numpy twin of the intrinsics crop transform was removed — both
+# paths now use SanaWMBeforeDenoisingStage._transform_intrinsics_for_condition_image.
 
 
 # NOTE: the former get_pose_inverse / compute_raymap / prepare_camera_conditions
