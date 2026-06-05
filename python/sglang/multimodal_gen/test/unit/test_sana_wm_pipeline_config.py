@@ -794,7 +794,7 @@ class TestSanaWMBeforeDenoisingStage(_GlobalStageArgsMixin, unittest.TestCase):
         # Z translation after 8 forward frames at the default (streaming)
         # translation speed. Reference the constant so the assertion cannot go
         # stale again if the default moves (it was 0.05 once, 0.04 now).
-        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_base import (
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.base import (
             _SANA_WM_DEFAULT_TRANSLATION_SPEED,
         )
 
@@ -1084,7 +1084,7 @@ class TestSanaWMDenoisingStage(unittest.TestCase):
         serial = neg + guidance_scale * (pos - neg)
 
         with patch(
-            "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_base.cfg_model_parallel_all_reduce",
+            "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.base.cfg_model_parallel_all_reduce",
             side_effect=lambda partial: partial + (1.0 - guidance_scale) * neg,
         ):
             combined_from_pos_rank = SanaWMDenoisingStage._combine_cfg_parallel_noise(
@@ -1092,7 +1092,7 @@ class TestSanaWMDenoisingStage(unittest.TestCase):
             )
 
         with patch(
-            "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_base.cfg_model_parallel_all_reduce",
+            "sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.base.cfg_model_parallel_all_reduce",
             side_effect=lambda partial: partial + guidance_scale * pos,
         ):
             combined_from_neg_rank = SanaWMDenoisingStage._combine_cfg_parallel_noise(

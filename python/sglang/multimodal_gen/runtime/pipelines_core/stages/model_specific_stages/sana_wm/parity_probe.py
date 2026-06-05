@@ -3,7 +3,7 @@
 
 Single home for the debug harness that localized the realtime<->batch parity
 bugs; previously copy-pasted across streaming.py / realtime.py /
-sana_wm_realtime.py / streaming_refiner.py / models/dits/sana_wm.py.
+realtime_stage.py / streaming_refiner.py / models/dits/sana_wm.py.
 
 Env vars:
 - ``SANAWM_FORK_DUMP_DIR``  — batch-path dumps (init_noise, conditioning,

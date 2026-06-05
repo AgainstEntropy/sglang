@@ -26,12 +26,12 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import (
     scale_and_shift_latents,
 )
 
-# Incremental stage-1 session, chunked LTX-2 refiner runner, and causal-VAE chunk decode.
+# Incremental stage-1 generator, chunked LTX-2 refiner runner, and causal-VAE chunk decode.
 from . import parity_probe
-from .realtime import (
-    SanaWMRealtimeSession,
+from .chunk_generator import (
+    SanaWMChunkGenerator,
 )
-from .sana_wm_base import (
+from .base import (
     _SANA_WM_DEFAULT_ROTATION_SPEED_DEG,
     _SANA_WM_DEFAULT_TRANSLATION_SPEED,
     SanaWMBeforeDenoisingStage,
@@ -189,9 +189,9 @@ class SanaWMStreamingState(BaseRealtimeState):
         # refined_full accumulates sink + refined frames across steps (refiner path).
         self.refined_full: torch.Tensor | None = None
         self.rollover_first_latent: torch.Tensor | None = None
-        # Incremental stage-1 session.
-        self.session: SanaWMRealtimeSession | None = None
-        # This step's camera tensors for session.step.
+        # Incremental stage-1 generator (chunk-by-chunk denoise engine).
+        self.generator: SanaWMChunkGenerator | None = None
+        # This step's camera tensors for generator.step.
         self.raymap: torch.Tensor | None = None
         self.chunk_plucker: torch.Tensor | None = None
         self.stage1_chunks = 0
@@ -225,7 +225,7 @@ class SanaWMStreamingState(BaseRealtimeState):
         self.camera_actions = []
         self.max_camera_actions = 0
         self.static_c2w = None
-        self.session = None
+        self.generator = None
         self.raymap = None
         self.chunk_plucker = None
         self.stage1_chunks = 0
@@ -411,7 +411,7 @@ class SanaWMRealtimeStage(PipelineStage):
         device: torch.device,
         dtype: torch.dtype,
     ) -> None:
-        if state.session is None:
+        if state.generator is None:
             return
         if state.src_size is None or state.resized_size is None or state.crop_offset is None:
             raise ValueError("SANA-WM crop metadata is not initialized")
@@ -490,7 +490,7 @@ class SanaWMRealtimeStage(PipelineStage):
             vae_temporal_stride=vae_time_stride,
             patch_size=(1, 1, 1),
         ).to(device=device, dtype=dtype)
-        # Carried into session.step as the next chunk's camera conditioning.
+        # Carried into generator.step as the next chunk's camera conditioning.
         state.raymap = raymap
         state.chunk_plucker = chunk_plucker
 
@@ -628,7 +628,7 @@ class SanaWMRealtimeStage(PipelineStage):
             raise RuntimeError("SANA-WM realtime refiner stage is not initialized")
         # Keep the refiner sub-modules resident on the model device. The offline
         # refiner stage moves them per-call via use_declared_component / the
-        # offload manager, but the realtime session encodes the prompt and runs
+        # offload manager, but the realtime stage encodes the prompt and runs
         # the refiner directly outside that context.
         for _mod in (rs.text_encoder, rs.connectors, rs.transformer):
             if _mod is not None:
@@ -757,8 +757,8 @@ class SanaWMRealtimeStage(PipelineStage):
         state.refiner_block_size = num_frame_per_block
         state.refiner_kv_max_frames = DEFAULT_REFINER_KV_MAX_FRAMES
 
-        # Incremental stage-1 session.
-        session = SanaWMRealtimeSession(
+        # Incremental stage-1 generator.
+        generator = SanaWMChunkGenerator(
             transformer,
             denoising_step_list=_as_int_tuple(
                 batch.extra.get("sana_wm_denoising_step_list"),
@@ -772,7 +772,7 @@ class SanaWMRealtimeStage(PipelineStage):
             dtype=weight_dtype,
             vae=self.vae,
         )
-        session.reset(
+        generator.reset(
             first_latent,
             cond,
             neg_embeds=neg if batch.do_classifier_free_guidance else None,
@@ -789,13 +789,13 @@ class SanaWMRealtimeStage(PipelineStage):
             # instead of using uniform blocks.
             total_latent_frames=latent_t,
         )
-        state.session = session
+        state.generator = generator
         self._update_camera_tensors(batch, state, device=device, dtype=weight_dtype)
 
-        # Stage-1 grows session.latents chunk-by-chunk; the cap is latent_t.
+        # Stage-1 grows generator.latents chunk-by-chunk; the cap is latent_t.
         # Number of stage-1 chunks after the first (which carries the cond frame):
         # chunk 0 -> 1 + nfpb frames, each later chunk -> nfpb frames.
-        state.latents = session.latents
+        state.latents = generator.latents
         state.latent_t = latent_t
         state.stage1_chunks = max(
             0, math.ceil((latent_t - 1) / num_frame_per_block)
@@ -842,24 +842,24 @@ class SanaWMRealtimeStage(PipelineStage):
         self,
         state: SanaWMStreamingState,
     ) -> tuple[int, int] | None:
-        """Generate ONE stage-1 chunk via OUR incremental session.
+        """Generate ONE stage-1 chunk via OUR incremental generator.
 
         Returns ``(start_f, end_f)`` of the freshly produced latent frames in
-        ``session.latents`` (which grows in place), or ``None`` once the latent
+        ``generator.latents`` (which grows in place), or ``None`` once the latent
         horizon ``latent_t`` is reached (triggering a rollover upstream).
         """
-        session = state.session
-        if session is None or state.produced_until >= state.latent_t:
+        generator = state.generator
+        if generator is None or state.produced_until >= state.latent_t:
             return None
-        start_f = session.latents.shape[2]
-        session.step(
+        start_f = generator.latents.shape[2]
+        generator.step(
             camera_conditions=state.raymap,
             chunk_plucker=state.chunk_plucker,
             n_frames=state.refiner_block_size,
             decode=False,
         )
-        end_f = session.latents.shape[2]
-        state.latents = session.latents
+        end_f = generator.latents.shape[2]
+        state.latents = generator.latents
         state.produced_until = end_f
         state.stage1_idx += 1
         return int(start_f), int(end_f)
@@ -883,10 +883,10 @@ class SanaWMRealtimeStage(PipelineStage):
     ) -> torch.Tensor | None:
         advanced = self._advance_stage1(state)
         state.tick += 1
-        if advanced is None or state.session is None:
+        if advanced is None or state.generator is None:
             return None
         _, end_f = advanced
-        src = state.session.latents
+        src = state.generator.latents
         seg = src[:, :, state.next_dec_idx : end_f]
         frames = self._decode_chunk(seg, state, server_args, vae_dtype=vae_dtype)
         self._store_rollover_first_latent(state, src, end_f - 1)
@@ -900,7 +900,7 @@ class SanaWMRealtimeStage(PipelineStage):
         *,
         vae_dtype: torch.dtype,
     ) -> torch.Tensor | None:
-        if state.session is None or state.refined_full is None:
+        if state.generator is None or state.refined_full is None:
             return None
         if state.refiner_runner is None:
             raise RuntimeError("SANA-WM refiner runner is not initialized")
@@ -917,7 +917,7 @@ class SanaWMRealtimeStage(PipelineStage):
         # made block 0 span 4 frames ([1,5) instead of [1,4)), shifting every block
         # boundary, the refiner KV history, and the per-block noise draws — the
         # refined latents diverged from batch even with bitwise-identical stage-1.
-        # Frames past the last complete block stay buffered in session.latents
+        # Frames past the last complete block stay buffered in generator.latents
         # until the next chunk supplies the rest of their block (the short tail
         # at the horizon end is refined as-is, mirroring batch's last block).
         block_size = int(state.refiner_block_size)
@@ -929,13 +929,13 @@ class SanaWMRealtimeStage(PipelineStage):
             if block_end <= block_start or block_end > end_f:
                 break
             sink_seed = (
-                state.session.latents[:, :, : state.sink_size]
+                state.generator.latents[:, :, : state.sink_size]
                 if block_start == state.sink_size
                 else None
             )
             refined = state.refiner_runner.refine_block(
                 block_idx=state.next_ref_idx,
-                clean_block=state.session.latents[
+                clean_block=state.generator.latents[
                     :, :, block_start:block_end
                 ].contiguous(),
                 block_start=block_start,

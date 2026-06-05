@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S3 test — SanaWMRealtimeSession: incremental, state-carried streaming.
+"""S3 test — SanaWMChunkGenerator: incremental, state-carried streaming.
 
-A tiny CPU model is stepped several times (one chunk per step). The session must
+A tiny CPU model is stepped several times (one chunk per step). The generator must
 carry the per-block KV cache + the growing latent across steps and produce finite
 chunks — the engine the interactive WASD/IJKL UI drives.
 """
@@ -19,8 +19,8 @@ from sglang.multimodal_gen.configs.models.dits.sana_wm import (
 )
 from sglang.multimodal_gen.runtime import server_args as _sa_mod
 from sglang.multimodal_gen.runtime.models.dits.sana_wm import SanaWMTransformer3DModel
-from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.realtime import (
-    SanaWMRealtimeSession,
+from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.chunk_generator import (
+    SanaWMChunkGenerator,
 )
 from sglang.multimodal_gen.runtime.server_args import set_global_server_args
 
@@ -63,9 +63,9 @@ def _tiny_model():
     return m
 
 
-def test_realtime_session_multi_step_carries_state(_global_args):
+def test_chunk_generator_multi_step_carries_state(_global_args):
     m = _tiny_model()
-    session = SanaWMRealtimeSession(
+    generator = SanaWMChunkGenerator(
         m,
         denoising_step_list=(1000, 700, 0),
         num_frame_per_block=3,
@@ -76,43 +76,43 @@ def test_realtime_session_multi_step_carries_state(_global_args):
     torch.manual_seed(0)
     first_latent = torch.randn(1, MC, 1, 2, 2, dtype=torch.float64)  # VAE-encoded first frame
     prompt = torch.randn(1, 4, 32, dtype=torch.float64)
-    session.reset(first_latent, prompt)
+    generator.reset(first_latent, prompt)
 
     # Step 1 (chunk 0): condition frame + 2 new frames.
-    f1 = session.step(n_frames=2)
+    f1 = generator.step(n_frames=2)
     assert f1.shape == (1, MC, 2, 2, 2)
     assert torch.isfinite(f1).all()
-    assert session.latents.shape[2] == 3  # 1 cond + 2
-    assert session.chunk_idx == 1
-    assert session.kv_cache[0][0][0] is not None  # GDN state stored
+    assert generator.latents.shape[2] == 3  # 1 cond + 2
+    assert generator.chunk_idx == 1
+    assert generator.kv_cache[0][0][0] is not None  # GDN state stored
 
     # Step 2 (chunk 1): 3 new frames, carrying the kv-cache.
-    f2 = session.step(n_frames=3)
+    f2 = generator.step(n_frames=3)
     assert f2.shape == (1, MC, 3, 2, 2)
     assert torch.isfinite(f2).all()
-    assert session.latents.shape[2] == 6
-    assert session.chunk_idx == 2
-    assert len(session.kv_cache) == 2
+    assert generator.latents.shape[2] == 6
+    assert generator.chunk_idx == 2
+    assert len(generator.kv_cache) == 2
 
     # Step 3: another 3 frames.
-    f3 = session.step(n_frames=3)
-    assert session.latents.shape[2] == 9
+    f3 = generator.step(n_frames=3)
+    assert generator.latents.shape[2] == 9
     assert torch.isfinite(f3).all()
-    # The condition (first) frame is held fixed across the whole session.
-    assert torch.allclose(session.latents[:, :, 0], first_latent[:, :, 0])
+    # The condition (first) frame is held fixed across the whole generator.
+    assert torch.allclose(generator.latents[:, :, 0], first_latent[:, :, 0])
 
 
-def test_realtime_session_reset_clears_state(_global_args):
+def test_chunk_generator_reset_clears_state(_global_args):
     m = _tiny_model()
-    session = SanaWMRealtimeSession(
+    generator = SanaWMChunkGenerator(
         m, denoising_step_list=(1000, 0), num_frame_per_block=2,
         cfg_scale=1.0, device=torch.device("cpu"), dtype=torch.float64,
     )
     fl = torch.randn(1, MC, 1, 2, 2, dtype=torch.float64)
     pe = torch.randn(1, 4, 32, dtype=torch.float64)
-    session.reset(fl, pe)
-    session.step(n_frames=2)
-    assert session.chunk_idx == 1
-    session.reset(fl, pe)
-    assert session.chunk_idx == 0 and len(session.kv_cache) == 0
-    assert session.latents.shape[2] == 1
+    generator.reset(fl, pe)
+    generator.step(n_frames=2)
+    assert generator.chunk_idx == 1
+    generator.reset(fl, pe)
+    assert generator.chunk_idx == 0 and len(generator.kv_cache) == 0
+    assert generator.latents.shape[2] == 1

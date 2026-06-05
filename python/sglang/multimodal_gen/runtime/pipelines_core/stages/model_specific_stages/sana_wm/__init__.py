@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """SANA-WM pipeline stages (package).
 
-The base stages live in ``sana_wm_base``; streaming, refiner, streaming_refiner
+The base stages live in ``base``; streaming, refiner, streaming_refiner
 and realtime are sibling submodules imported by their explicit path. The
 realtime serving framework drives ``SanaWMRealtimeStage`` over the
 ``/v1/realtime_video`` WebSocket.
@@ -9,7 +9,7 @@ realtime serving framework drives ``SanaWMRealtimeStage`` over the
 The base stages + a few helpers are re-exported here for back-compat.
 """
 
-from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_base import (
+from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.base import (
     SanaWMBeforeDenoisingStage,
     SanaWMDecodingStage,
     SanaWMDenoisingStage,
@@ -34,12 +34,12 @@ __all__ = [
 
 
 def __getattr__(name):
-    # Lazily resolve the realtime stage. ``sana_wm_realtime`` imports from
+    # Lazily resolve the realtime stage. ``realtime_stage`` imports from
     # ``.realtime`` / ``.refiner`` / ``.streaming_refiner`` (this package), so
     # importing it eagerly here would hit a partially-initialized package; defer
     # to first attribute access to stay cycle-free.
     if name == "SanaWMRealtimeStage":
-        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_realtime import (
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.realtime_stage import (
             SanaWMRealtimeStage,
         )
 

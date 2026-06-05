@@ -41,7 +41,7 @@ from sglang.multimodal_gen.runtime.models.schedulers.scheduling_sana_wm_self_for
     SanaWMSelfForcingSamplerConfig,
     SanaWMSelfForcingScheduler,
 )
-from .sana_wm_base import (
+from .base import (
     SanaWMDenoisingStage,
     _align_sana_wm_cfg_text_conditions,
     _cat_optional_tensors,
@@ -89,7 +89,7 @@ def self_forcing_denoise_chunk(
     """Self-forcing denoise of ONE chunk + the clean t=0 KV pass.
 
     SINGLE implementation of the parity-locked per-chunk math, shared by the
-    batch SanaWMStreamingDenoisingStage and SanaWMRealtimeSession.step (it used
+    batch SanaWMStreamingDenoisingStage and SanaWMChunkGenerator.step (it used
     to be copy-pasted — the same drift failure mode as the four parity bugs).
 
     ``get_chunk``/``set_chunk`` are caller closures so each path keeps its

@@ -23,7 +23,7 @@ TARGET_WIDTH = 1280
 # Official NVlabs defaults (utils.py upstream). FOOTGUN: 0.05 is the
 # BIDIRECTIONAL default; the streaming pipelines use 0.04
 # (STREAMING_TRANSLATION_SPEED == _SANA_WM_DEFAULT_TRANSLATION_SPEED in
-# sana_wm_base.py). Every runtime call site passes translation_speed
+# base.py). Every runtime call site passes translation_speed
 # explicitly — keep it that way; do not rely on this module default.
 DEFAULT_TRANSLATION_SPEED = 0.05
 DEFAULT_ROTATION_SPEED_DEG = 1.2

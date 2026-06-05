@@ -1,12 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SANA-WM realtime interactive session — S3 backend.
+"""SANA-WM incremental chunk generator — the realtime stage-1 engine (S3 backend).
 
 The streaming denoising stage runs the whole clip in one call. For LIVE control
-(WASD/IJKL keyboard between chunks) we need an *incremental* engine: a session
-that holds the per-block KV cache + decoder conv-cache + latent state and exposes
+(WASD/IJKL keyboard between chunks) we need an *incremental* engine that holds
+the per-block KV cache + decoder conv-cache + latent state and exposes
 ``step(camera_conditions, chunk_plucker) -> latent_chunk`` (optionally decoded),
 generating ONE chunk per user action. This is the "Design B" incremental loop —
 the engine the websocket route + WASD/IJKL web UI drive.
+
+NOT to be confused with the realtime framework's ``RealtimeSession``
+(``runtime/realtime/session.py``): that is the per-session *state container*
+the scheduler binds to a ``session_id`` (a registry of ``BaseRealtimeState``
+blobs). A ``SanaWMChunkGenerator`` is model-side compute state and lives
+INSIDE that container, on ``SanaWMStreamingState.generator`` (see
+``realtime_stage.py``). Role-wise it covers what the framework's
+``RealtimeCausalDiTState`` covers for causal-DiT models (carry KV cache +
+chunk counters across chunks) plus the SANA-WM-specific seeded-noise
+discipline, front-loaded segmentation, and the self-forcing denoise loop.
 
 Reuses the validated streaming pieces: ``forward_long`` (chunk-causal DiT),
 ``SanaWMStreamingDenoisingStage._accumulate_kv_cache`` / ``_autoregressive_segments``
@@ -34,7 +44,7 @@ from .streaming import (
 )
 
 
-class SanaWMRealtimeSession:
+class SanaWMChunkGenerator:
     """Incremental, stateful streaming generator for interactive control.
 
     A new chunk is produced per ``step``; the recurrent GDN state / softmax
