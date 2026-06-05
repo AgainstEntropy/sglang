@@ -451,6 +451,33 @@ class TestSanaWMBeforeDenoisingStage(_GlobalStageArgsMixin, unittest.TestCase):
         self.assertAlmostEqual(float(poses[2, 2, 3]), 0.1, places=5)
         self.assertAlmostEqual(float(poses[3, 0, 3]), 0.05, places=5)
 
+    def test_action_rollout_single_sources_official_kinematics(self) -> None:
+        # The batch rollout must be BITWISE-identical to the official-matching
+        # utils.action_string_to_c2w (single kinematics implementation), and the
+        # official strafe->yaw coupling (yaw += 0.4 * (d - a)) must be live.
+        import torch
+
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.utils import (
+            action_string_to_c2w,
+        )
+
+        action = "w-4,wd-4,al-4,ij-2"
+        batch_poses = sana_wm_action_to_camera_to_world(
+            action, translation_speed=0.04, rotation_speed_deg=1.2
+        )
+        official_poses = torch.from_numpy(
+            action_string_to_c2w(
+                action, translation_speed=0.04, rotation_speed_deg=1.2
+            )
+        )
+        self.assertTrue(torch.equal(batch_poses, official_poses))
+
+        # Strafe-only action yaws the camera (forward axis tilts off +Z).
+        strafed = sana_wm_action_to_camera_to_world(
+            "d-10", translation_speed=0.04, rotation_speed_deg=1.2
+        )
+        self.assertGreater(abs(float(strafed[-1, 0, 2])), 1e-4)
+
     def test_action_string_rejects_unknown_keys_and_bad_duration(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown keys"):
             parse_sana_wm_action_string("x-1")
@@ -762,7 +789,18 @@ class TestSanaWMBeforeDenoisingStage(_GlobalStageArgsMixin, unittest.TestCase):
         self.assertEqual(source, "action")
         self.assertEqual(camera_conditions.shape, (1, 2, 20))
         self.assertEqual(chunk_plucker.shape, (1, 48, 2, 2, 2))
-        self.assertAlmostEqual(float(camera_conditions[0, 1, 11]), 0.4, places=5)
+        # Z translation after 8 forward frames at the default (streaming)
+        # translation speed. Reference the constant so the assertion cannot go
+        # stale again if the default moves (it was 0.05 once, 0.04 now).
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.sana_wm_base import (
+            _SANA_WM_DEFAULT_TRANSLATION_SPEED,
+        )
+
+        self.assertAlmostEqual(
+            float(camera_conditions[0, 1, 11]),
+            8 * _SANA_WM_DEFAULT_TRANSLATION_SPEED,
+            places=5,
+        )
 
     def test_camera_conditioning_accepts_unbatched_chunk_plucker(self) -> None:
         stage = SanaWMBeforeDenoisingStage(

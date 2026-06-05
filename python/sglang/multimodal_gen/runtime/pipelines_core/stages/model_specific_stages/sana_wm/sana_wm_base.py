@@ -40,6 +40,8 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
+from .utils import action_string_to_c2w
+
 logger = init_logger(__name__)
 
 _SANA_WM_DIAGNOSTICS_ENVS = (
@@ -54,20 +56,6 @@ _SANA_WM_DEFAULT_ROTATION_SPEED_DEG = 1.2
 _SANA_WM_DEFAULT_PITCH_LIMIT_DEG = 85.0
 _SANA_WM_ALLOWED_ACTION_KEYS: frozenset[str] = frozenset("wasdijkl")
 _SANA_WM_CONDITION_IMAGE_PREPROCESS_KEY = "sana_wm_condition_image_preprocess"
-
-
-def _sana_wm_rot_x(angle_rad: float) -> torch.Tensor:
-    c, s = math.cos(angle_rad), math.sin(angle_rad)
-    return torch.tensor(
-        [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]], dtype=torch.float64
-    )
-
-
-def _sana_wm_rot_y(angle_rad: float) -> torch.Tensor:
-    c, s = math.cos(angle_rad), math.sin(angle_rad)
-    return torch.tensor(
-        [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=torch.float64
-    )
 
 
 def parse_sana_wm_action_string(action: str) -> list[list[str]]:
@@ -120,64 +108,22 @@ def sana_wm_action_to_camera_to_world(
     The DSL groups segments as ``<keys>-<frames>`` joined by commas. Movement
     keys ``wasd`` translate on the world XZ plane; rotation keys ``ijkl`` apply
     pitch/yaw. The coordinate convention is OpenCV: +X right, +Y down, +Z
-    forward. The returned shape is ``(N+1, 4, 4)``.
+    forward. The returned shape is ``(N+1, 4, 4)``, float32.
+
+    Delegates to ``utils.action_string_to_c2w`` — the official-matching rollout
+    (byte-identical kinematics to the NVlabs reference, including the
+    strafe->yaw coupling ``yaw += 0.4 * (d - a)`` that this module's previous
+    in-house rollout dropped) — so the batch and realtime paths share ONE
+    kinematics implementation and cannot drift.
     """
-
-    per_frame = parse_sana_wm_action_string(action)
-    rotate_rad = math.radians(float(rotation_speed_deg))
-    pitch_limit_rad = math.radians(float(pitch_limit_deg))
-    current = torch.eye(4, dtype=torch.float64)
-    poses = [current.clone()]
-    current_pitch = 0.0
-
-    for keys in per_frame:
-        held = set(keys)
-        rotation = current[:3, :3]
-        translation = current[:3, 3]
-
-        pitch_delta = (rotate_rad if "i" in held else 0.0) - (
-            rotate_rad if "k" in held else 0.0
+    return torch.from_numpy(
+        action_string_to_c2w(
+            action,
+            translation_speed=translation_speed,
+            rotation_speed_deg=rotation_speed_deg,
+            pitch_limit_deg=pitch_limit_deg,
         )
-        new_pitch = current_pitch + pitch_delta
-        if not (-pitch_limit_rad <= new_pitch <= pitch_limit_rad):
-            pitch_delta = 0.0
-        else:
-            current_pitch = new_pitch
-
-        yaw_delta = (rotate_rad if "l" in held else 0.0) - (
-            rotate_rad if "j" in held else 0.0
-        )
-        rotation_new = (
-            _sana_wm_rot_y(yaw_delta) @ rotation @ _sana_wm_rot_x(pitch_delta)
-        )
-
-        forward = rotation_new[:, 2].clone()
-        forward[1] = 0.0
-        right = rotation_new[:, 0].clone()
-        right[1] = 0.0
-        forward_norm = float(torch.linalg.vector_norm(forward).item())
-        right_norm = float(torch.linalg.vector_norm(right).item())
-        if forward_norm > 0:
-            forward = forward / (forward_norm + 1e-6)
-        if right_norm > 0:
-            right = right / (right_norm + 1e-6)
-
-        move = torch.zeros(3, dtype=torch.float64)
-        if "w" in held:
-            move += forward * float(translation_speed)
-        if "s" in held:
-            move -= forward * float(translation_speed)
-        if "d" in held:
-            move += right * float(translation_speed)
-        if "a" in held:
-            move -= right * float(translation_speed)
-
-        current = torch.eye(4, dtype=torch.float64)
-        current[:3, :3] = rotation_new
-        current[:3, 3] = translation + move
-        poses.append(current.clone())
-
-    return torch.stack(poses, dim=0).to(dtype=torch.float32)
+    )
 
 
 def _resolve_sana_wm_vae_frame_tile_value(

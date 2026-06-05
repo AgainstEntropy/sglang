@@ -473,9 +473,9 @@ class SanaWMRealtimeStage(PipelineStage):
         )
         # Build raymap + chunk_plucker through the SAME helpers (and on the same
         # device) as the batch path's _build_camera_conditioning, instead of the
-        # equivalent-but-separate utils.prepare_camera_conditions: the two
-        # implementations agree only to ~1-2 bf16 ulps on some frames, and that
-        # seed amplifies to %-level stage-1 drift through the bf16 block stack
+        # equivalent-but-separate utils.prepare_camera_conditions (since removed):
+        # the two implementations agreed only to ~1-2 bf16 ulps on some frames, and
+        # that seed amplifies to %-level stage-1 drift through the bf16 block stack
         # across chunks (measured: plucker_emb 1.7e-7 -> chunk>=2 1.3-4% relRMS).
         vae_time_stride = 8
         latent_h = SANA_WM_HEIGHT // 32

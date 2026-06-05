@@ -20,6 +20,11 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 TARGET_HEIGHT = 704
 TARGET_WIDTH = 1280
+# Official NVlabs defaults (utils.py upstream). FOOTGUN: 0.05 is the
+# BIDIRECTIONAL default; the streaming pipelines use 0.04
+# (STREAMING_TRANSLATION_SPEED == _SANA_WM_DEFAULT_TRANSLATION_SPEED in
+# sana_wm_base.py). Every runtime call site passes translation_speed
+# explicitly — keep it that way; do not rely on this module default.
 DEFAULT_TRANSLATION_SPEED = 0.05
 DEFAULT_ROTATION_SPEED_DEG = 1.2
 DEFAULT_PITCH_LIMIT_DEG = 85.0
@@ -437,84 +442,8 @@ def transform_intrinsics_for_crop(
     return out
 
 
-def get_pose_inverse(transform: torch.Tensor) -> torch.Tensor:
-    rotation = transform[..., :3, :3]
-    translation = transform[..., :3, 3]
-    rotation_inv = rotation.transpose(-1, -2)
-    translation_inv = -torch.matmul(rotation_inv, translation.unsqueeze(-1)).squeeze(-1)
-    out = torch.eye(4, dtype=transform.dtype, device=transform.device).repeat(transform.shape[:-2] + (1, 1))
-    out[..., :3, :3] = rotation_inv
-    out[..., :3, 3] = translation_inv
-    return out
-
-
-def compute_raymap(intrinsics: torch.Tensor, poses: torch.Tensor, height: int, width: int) -> torch.Tensor:
-    """Return Plucker ray coordinates with shape ``(T, H, W, 6)``."""
-    frames = intrinsics.shape[0]
-    device, dtype = intrinsics.device, intrinsics.dtype
-    y_grid, x_grid = torch.meshgrid(
-        torch.arange(height, device=device, dtype=dtype),
-        torch.arange(width, device=device, dtype=dtype),
-        indexing="ij",
-    )
-    x_grid = x_grid[None].expand(frames, -1, -1)
-    y_grid = y_grid[None].expand(frames, -1, -1)
-
-    fx = intrinsics[:, 0].view(frames, 1, 1)
-    fy = intrinsics[:, 1].view(frames, 1, 1)
-    cx = intrinsics[:, 2].view(frames, 1, 1)
-    cy = intrinsics[:, 3].view(frames, 1, 1)
-    dirs_cam = torch.stack([(x_grid - cx) / fx, (y_grid - cy) / fy, torch.ones_like(x_grid)], dim=-1)
-
-    rotation = poses[:, :3, :3]
-    translation = poses[:, :3, 3]
-    dirs_world = torch.einsum("tij,thwj->thwi", rotation, dirs_cam)
-    dirs_world = dirs_world / torch.norm(dirs_world, dim=-1, keepdim=True)
-    origins = translation.view(frames, 1, 1, 3).expand_as(dirs_world)
-    moments = torch.cross(origins, dirs_world, dim=-1)
-    return torch.cat([dirs_world, moments], dim=-1)
-
-
-def prepare_camera_conditions(
-    poses_c2w: np.ndarray,
-    intrinsics: np.ndarray,
-    *,
-    target_size: tuple[int, int] = (TARGET_HEIGHT, TARGET_WIDTH),
-    vae_stride: tuple[int, int, int] = (8, 32, 32),
-) -> dict[str, torch.Tensor]:
-    """Build the SANA-WM camera tensors consumed by Stage-1 DiT."""
-    num_frames = poses_c2w.shape[0]
-    vae_time_stride, vae_spatial_stride = vae_stride[0], vae_stride[-1]
-    target_h, target_w = target_size
-    latent_h = target_h // vae_spatial_stride
-    latent_w = target_w // vae_spatial_stride
-    latent_frames = (num_frames - 1) // vae_time_stride + 1
-
-    poses = torch.from_numpy(poses_c2w).float()
-    first_inv = get_pose_inverse(poses[0:1]).squeeze(0)
-    poses = torch.cat([torch.eye(4).unsqueeze(0), torch.matmul(first_inv, poses[1:])], dim=0)
-
-    intrinsics_latent = torch.from_numpy(intrinsics).float()
-    intrinsics_latent[:, [0, 2]] *= latent_w / float(target_w)
-    intrinsics_latent[:, [1, 3]] *= latent_h / float(target_h)
-
-    time_indices = torch.arange(0, num_frames, vae_time_stride)[:latent_frames]
-    raymap = torch.cat(
-        [poses[time_indices].reshape(len(time_indices), -1), intrinsics_latent[time_indices]],
-        dim=-1,
-    )
-
-    chunks = []
-    for start in time_indices - (vae_time_stride - 1):
-        start_idx = max(0, int(start))
-        end_idx = start_idx + vae_time_stride
-        chunk_poses = poses[start_idx:end_idx]
-        chunk_intrinsics = intrinsics_latent[start_idx:end_idx]
-        if chunk_poses.shape[0] < vae_time_stride:
-            pad = vae_time_stride - chunk_poses.shape[0]
-            chunk_poses = torch.cat([chunk_poses, chunk_poses[-1:].repeat(pad, 1, 1)], dim=0)
-            chunk_intrinsics = torch.cat([chunk_intrinsics, chunk_intrinsics[-1:].repeat(pad, 1)], dim=0)
-        plucker = compute_raymap(chunk_intrinsics, chunk_poses, latent_h, latent_w)
-        chunks.append(plucker.permute(0, 3, 1, 2).reshape(-1, latent_h, latent_w))
-    chunk_plucker = torch.stack(chunks).permute(1, 0, 2, 3)
-    return {"raymap": raymap, "chunk_plucker": chunk_plucker}
+# NOTE: the former get_pose_inverse / compute_raymap / prepare_camera_conditions
+# trio (a parallel raymap+chunk_plucker builder) was removed: the realtime stage
+# now builds camera tensors through the SAME SanaWMBeforeDenoisingStage helpers +
+# compute_chunk_plucker as the batch path (single source of truth — the parallel
+# implementation agreed only to ~1-2 bf16 ulps and broke bitwise parity).
