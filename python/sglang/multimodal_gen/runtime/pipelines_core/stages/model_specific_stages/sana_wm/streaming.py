@@ -63,6 +63,114 @@ from . import parity_probe
 _SANAWM_INJECT_DIR = _os.environ.get(parity_probe.ENV_INJECT)
 
 
+def self_forcing_denoise_chunk(
+    *,
+    transformer,
+    scheduler,
+    sigmas,
+    get_chunk,
+    set_chunk,
+    cond_mask: torch.Tensor,
+    embeds: torch.Tensor,
+    mask,
+    camera_conditions,
+    chunk_plucker,
+    chunk_kv,
+    start_f: int,
+    end_f: int,
+    frame_index,
+    do_cfg: bool,
+    cfg_scale: float,
+    target_dtype: torch.dtype,
+    device,
+    forward_ctx=None,
+    on_noise_pred=None,
+) -> list:
+    """Self-forcing denoise of ONE chunk + the clean t=0 KV pass.
+
+    SINGLE implementation of the parity-locked per-chunk math, shared by the
+    batch SanaWMStreamingDenoisingStage and SanaWMRealtimeSession.step (it used
+    to be copy-pasted — the same drift failure mode as the four parity bugs).
+
+    ``get_chunk``/``set_chunk`` are caller closures so each path keeps its
+    EXACT tensor lifecycle (batch reads/writes views of the full-latent buffer;
+    realtime carries a local chunk tensor) — kernel-visible layouts, and
+    therefore bitwise behavior, are unchanged. ``set_chunk`` owns the dtype
+    cast and the cond-frame re-pinning. ``forward_ctx`` (optional) is a
+    callable ``int timestep -> context manager`` (batch wraps forward_long in
+    set_forward_context; realtime does not). ``on_noise_pred`` (optional) is
+    the parity-probe hook ``(int timestep, noise_pred) -> None``.
+
+    Returns this chunk's updated per-block KV cache.
+    """
+    from contextlib import nullcontext
+
+    ctx = forward_ctx if forward_ctx is not None else (lambda _ts: nullcontext())
+
+    scheduler.set_timesteps(sigmas=sigmas, device=device)
+    for t in scheduler.timesteps:
+        chunk_lat = get_chunk()
+        B, C = chunk_lat.shape[0], chunk_lat.shape[1]
+        lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if do_cfg else chunk_lat
+        ts_tensor = (1.0 - cond_mask) * t.to(
+            device=device, dtype=torch.float32
+        ).view(1, 1, 1, 1, 1)
+        ts_in = torch.cat([ts_tensor, ts_tensor], dim=0) if do_cfg else ts_tensor
+        model_ts = ts_in[:, :1, :, 0, 0]  # (B|2B, chunk_frames)
+
+        with ctx(int(t.item()) if t.ndim == 0 else 0):
+            noise_pred, _ = transformer.forward_long(
+                hidden_states=lat_in.to(target_dtype),
+                encoder_hidden_states=embeds,
+                timestep=model_ts,
+                encoder_attention_mask=mask,
+                camera_conditions=camera_conditions,
+                chunk_plucker=chunk_plucker,
+                kv_cache=chunk_kv,
+                save_kv_cache=False,
+                start_f=start_f,
+                end_f=end_f,
+                frame_index=frame_index,
+            )
+        if do_cfg:
+            noise_uncond, noise_text = noise_pred.chunk(2)
+            noise_pred = noise_uncond + cfg_scale * (noise_text - noise_uncond)
+
+        if on_noise_pred is not None:
+            on_noise_pred(int(t.item()), noise_pred)
+
+        denoised = scheduler.step(
+            -noise_pred.reshape(B, C, -1).transpose(1, 2),
+            t,
+            chunk_lat.reshape(B, C, -1).transpose(1, 2),
+            per_token_timesteps=ts_tensor.reshape(B, C, -1)[:, 0],
+            return_dict=False,
+        )[0]
+        set_chunk(denoised.transpose(1, 2).reshape(chunk_lat.shape))
+
+    # Clean pass (t=0) to write this chunk's KV for the next chunk.
+    chunk_lat = get_chunk()
+    lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if do_cfg else chunk_lat
+    ts_zero = torch.zeros(
+        lat_in.shape[0], 1, chunk_lat.shape[2], device=device, dtype=torch.float32
+    )
+    with ctx(0):
+        _, updated_cache = transformer.forward_long(
+            hidden_states=lat_in.to(target_dtype),
+            encoder_hidden_states=embeds,
+            timestep=ts_zero,
+            encoder_attention_mask=mask,
+            camera_conditions=camera_conditions,
+            chunk_plucker=chunk_plucker,
+            kv_cache=chunk_kv,
+            save_kv_cache=True,
+            start_f=start_f,
+            end_f=end_f,
+            frame_index=frame_index,
+        )
+    return updated_cache
+
+
 class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
     """Autoregressive self-forcing streaming variant of SanaWMDenoisingStage."""
 
@@ -271,77 +379,53 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
                     cond_mask[:, :, 0] = 1.0
                     cond_local = [0]
 
-                scheduler.set_timesteps(sigmas=explicit_sigmas, device=device)
-                for t in scheduler.timesteps:
-                    chunk_lat = latents[:, :, start_f:end_f]
-                    lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if do_cfg else chunk_lat
-                    ts_tensor = (1.0 - cond_mask) * t.to(
-                        device=device, dtype=torch.float32
-                    ).view(1, 1, 1, 1, 1)
-                    ts_in = torch.cat([ts_tensor, ts_tensor], dim=0) if do_cfg else ts_tensor
-                    model_ts = ts_in[:, :1, :, 0, 0]  # (B|2B, chunk_frames)
+                # Buffer-view closures: the shared loop reads/writes views of
+                # the full-latent buffer (kernel-visible layouts unchanged).
+                def _get_chunk(start_f=start_f, end_f=end_f):
+                    return latents[:, :, start_f:end_f]
 
-                    with set_forward_context(
-                        current_timestep=int(t.item()) if t.ndim == 0 else 0,
+                def _set_chunk(
+                    denoised, start_f=start_f, end_f=end_f, cond_local=cond_local
+                ):
+                    latents[:, :, start_f:end_f] = denoised.to(latents.dtype)
+                    for loc in cond_local:
+                        latents[:, :, start_f + loc] = init_latents[
+                            :, :, start_f + loc
+                        ]
+
+                def _forward_ctx(ts_int):
+                    return set_forward_context(
+                        current_timestep=ts_int,
                         attn_metadata=None,
                         forward_batch=batch,
-                    ):
-                        noise_pred, _ = transformer.forward_long(
-                            hidden_states=lat_in.to(target_dtype),
-                            encoder_hidden_states=embeds_in,
-                            timestep=model_ts,
-                            encoder_attention_mask=mask_in,
-                            camera_conditions=cam_in,
-                            chunk_plucker=plk_in,
-                            kv_cache=chunk_kv,
-                            save_kv_cache=False,
-                            start_f=start_f,
-                            end_f=end_f,
-                            frame_index=frame_index,
-                        )
-                    if do_cfg:
-                        noise_uncond, noise_text = noise_pred.chunk(2)
-                        noise_pred = noise_uncond + cfg_scale * (noise_text - noise_uncond)
+                    )
 
+                def _on_noise_pred(ts_int, noise_pred, chunk_idx=chunk_idx):
                     if chunk_idx == 0:  # parity harness: per-step model output
-                        _fdump(f"noise_pred_c0_t{int(t.item())}", noise_pred)
+                        _fdump(f"noise_pred_c0_t{ts_int}", noise_pred)
 
-                    denoised = scheduler.step(
-                        -noise_pred.reshape(B, C, -1).transpose(1, 2),
-                        t,
-                        chunk_lat.reshape(B, C, -1).transpose(1, 2),
-                        per_token_timesteps=ts_tensor.reshape(B, C, -1)[:, 0],
-                        return_dict=False,
-                    )[0]
-                    latents[:, :, start_f:end_f] = (
-                        denoised.transpose(1, 2).reshape(chunk_lat.shape).to(latents.dtype)
-                    )
-                    for loc in cond_local:
-                        latents[:, :, start_f + loc] = init_latents[:, :, start_f + loc]
-
-                # Clean pass (t=0) to write this chunk's KV for the next chunk.
-                chunk_lat = latents[:, :, start_f:end_f]
-                lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if do_cfg else chunk_lat
-                ts_zero = torch.zeros(
-                    lat_in.shape[0], 1, chunk_frames, device=device, dtype=torch.float32
+                kv_cache[chunk_idx] = self_forcing_denoise_chunk(
+                    transformer=transformer,
+                    scheduler=scheduler,
+                    sigmas=explicit_sigmas,
+                    get_chunk=_get_chunk,
+                    set_chunk=_set_chunk,
+                    cond_mask=cond_mask,
+                    embeds=embeds_in,
+                    mask=mask_in,
+                    camera_conditions=cam_in,
+                    chunk_plucker=plk_in,
+                    chunk_kv=chunk_kv,
+                    start_f=start_f,
+                    end_f=end_f,
+                    frame_index=frame_index,
+                    do_cfg=do_cfg,
+                    cfg_scale=cfg_scale,
+                    target_dtype=target_dtype,
+                    device=device,
+                    forward_ctx=_forward_ctx,
+                    on_noise_pred=_on_noise_pred,
                 )
-                with set_forward_context(
-                    current_timestep=0, attn_metadata=None, forward_batch=batch
-                ):
-                    _, updated_cache = transformer.forward_long(
-                        hidden_states=lat_in.to(target_dtype),
-                        encoder_hidden_states=embeds_in,
-                        timestep=ts_zero,
-                        encoder_attention_mask=mask_in,
-                        camera_conditions=cam_in,
-                        chunk_plucker=plk_in,
-                        kv_cache=chunk_kv,
-                        save_kv_cache=True,
-                        start_f=start_f,
-                        end_f=end_f,
-                        frame_index=frame_index,
-                    )
-                kv_cache[chunk_idx] = updated_cache
                 _fdump(f"stage1_{chunk_idx:03d}_{start_f}_{end_f}", latents[:, :, start_f:end_f])
 
         log_sana_wm_tensor_stats("stream.output_latents", latents)

@@ -24,9 +24,13 @@ from sglang.multimodal_gen.runtime.models.dits.sana_wm import _NUM_STREAM_CACHE_
 from sglang.multimodal_gen.runtime.models.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
 )
+from sglang.multimodal_gen.runtime.models.schedulers.scheduling_sana_wm_self_forcing import (
+    SanaWMSelfForcingScheduler,
+)
 from . import parity_probe
 from .streaming import (
     SanaWMStreamingDenoisingStage,
+    self_forcing_denoise_chunk,
 )
 
 
@@ -60,10 +64,11 @@ class SanaWMRealtimeSession:
         self.sink_token = bool(sink_token)
         self.cfg_scale = float(cfg_scale)
         self.use_cfg = self.cfg_scale > 1.0
-        schedule = list(denoising_step_list)
-        if len(schedule) < 2 or schedule[-1] != 0:
-            raise ValueError(f"denoising_step_list must end with 0, got {schedule}")
-        self._sigmas = [float(t) / 1000.0 for t in schedule[:-1]]
+        # Single-sourced sigma builder (same helper the batch stage uses;
+        # validates the trailing-0 contract and divides by 1000).
+        self._sigmas = SanaWMSelfForcingScheduler.build_per_chunk_sigmas(
+            denoising_step_list
+        )
         self._scheduler = FlowMatchEulerDiscreteScheduler(shift=1.0)
         self.num_blocks = len(transformer.blocks)
         self._reset_state()
@@ -246,61 +251,48 @@ class SanaWMRealtimeSession:
                     "dit_fingerprint",
                     parity_probe.weights_fingerprint(self.transformer),
                 )
-        self._scheduler.set_timesteps(sigmas=self._sigmas, device=self.device)
-        for t in self._scheduler.timesteps:
-            lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if self.use_cfg else chunk_lat
-            ts = (1.0 - cond_mask) * t.to(self.device, torch.float32).view(1, 1, 1, 1, 1)
-            ts_in = torch.cat([ts, ts], dim=0) if self.use_cfg else ts
-            noise_pred, _ = self.transformer.forward_long(
-                hidden_states=lat_in.to(self.dtype),
-                encoder_hidden_states=embeds,
-                timestep=ts_in[:, :1, :, 0, 0],
-                encoder_attention_mask=mask,
-                camera_conditions=camera_conditions,
-                chunk_plucker=chunk_plucker,
-                kv_cache=chunk_kv,
-                save_kv_cache=False,
-                start_f=start_f,
-                end_f=end_f,
-                frame_index=frame_index,
-            )
-            if self.use_cfg:
-                nu, nt = noise_pred.chunk(2)
-                noise_pred = nu + self.cfg_scale * (nt - nu)
-            if _dump_dir and self.chunk_idx == 0:  # parity harness: per-step model output
-                parity_probe.dump_tensor(
-                    _dump_dir, f"noise_pred_c0_t{int(t.item())}", noise_pred
-                )
-            denoised = self._scheduler.step(
-                -noise_pred.reshape(B, C, -1).transpose(1, 2),
-                t,
-                chunk_lat.reshape(B, C, -1).transpose(1, 2),
-                per_token_timesteps=ts.reshape(B, C, -1)[:, 0],
-                return_dict=False,
-            )[0]
-            chunk_lat = denoised.transpose(1, 2).reshape(init_chunk.shape).to(self.dtype)
-            for loc in cond_local:
-                chunk_lat[:, :, loc] = init_chunk[:, :, loc]
+        # Local-chunk closures for the SHARED per-chunk denoise implementation
+        # (single source with the batch streaming stage; see
+        # streaming.self_forcing_denoise_chunk).
+        _local = {"lat": chunk_lat}
 
-        # Clean t=0 pass to write this chunk's KV for the next step.
-        ts_zero = torch.zeros(
-            (2 if self.use_cfg else 1), 1, chunk_frames, device=self.device, dtype=torch.float32
-        )
-        lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if self.use_cfg else chunk_lat
-        _, updated = self.transformer.forward_long(
-            hidden_states=lat_in.to(self.dtype),
-            encoder_hidden_states=embeds,
-            timestep=ts_zero,
-            encoder_attention_mask=mask,
+        def _get_chunk():
+            return _local["lat"]
+
+        def _set_chunk(denoised):
+            lat = denoised.to(self.dtype)
+            for loc in cond_local:
+                lat[:, :, loc] = init_chunk[:, :, loc]
+            _local["lat"] = lat
+
+        def _on_noise_pred(ts_int, noise_pred):
+            if _dump_dir and self.chunk_idx == 0:  # parity harness
+                parity_probe.dump_tensor(
+                    _dump_dir, f"noise_pred_c0_t{ts_int}", noise_pred
+                )
+
+        self.kv_cache[self.chunk_idx] = self_forcing_denoise_chunk(
+            transformer=self.transformer,
+            scheduler=self._scheduler,
+            sigmas=self._sigmas,
+            get_chunk=_get_chunk,
+            set_chunk=_set_chunk,
+            cond_mask=cond_mask,
+            embeds=embeds,
+            mask=mask,
             camera_conditions=camera_conditions,
             chunk_plucker=chunk_plucker,
-            kv_cache=chunk_kv,
-            save_kv_cache=True,
+            chunk_kv=chunk_kv,
             start_f=start_f,
             end_f=end_f,
             frame_index=frame_index,
+            do_cfg=self.use_cfg,
+            cfg_scale=self.cfg_scale,
+            target_dtype=self.dtype,
+            device=self.device,
+            on_noise_pred=_on_noise_pred,
         )
-        self.kv_cache[self.chunk_idx] = updated
+        chunk_lat = _local["lat"]
 
         # Append to the running latent (chunk 0 already holds the first frame).
         if self.chunk_idx == 0:
