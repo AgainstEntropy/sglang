@@ -10,7 +10,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import numpy as np
 import torch
@@ -233,6 +233,30 @@ def _rot_y(angle_rad: float) -> np.ndarray:
     return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float64)
 
 
+def normalize_camera_actions(
+    payload: Any,
+    *,
+    allow_none: bool = False,
+    error_label: str = "camera_actions",
+) -> list[list[str]]:
+    """Validate + lowercase-normalize a ``list[list[str]]`` camera-action payload.
+
+    Single implementation shared by the realtime adapter (event payloads,
+    ``allow_none=False``) and the realtime stage (condition inputs,
+    ``allow_none=True``).
+    """
+    if payload is None and allow_none:
+        return []
+    if not isinstance(payload, list):
+        raise ValueError(f"{error_label} must be list[list[str]]")
+    out: list[list[str]] = []
+    for frame_actions in payload:
+        if not isinstance(frame_actions, list):
+            raise ValueError(f"{error_label} must be list[list[str]]")
+        out.append([str(key).lower() for key in frame_actions])
+    return out
+
+
 def parse_action_string(action: str) -> list[list[str]]:
     cleaned = "".join(action.replace("，", ",").split())
     if not cleaned:
@@ -253,7 +277,9 @@ def parse_action_string(action: str) -> list[list[str]]:
             if bad:
                 raise ValueError(f"unknown action keys {bad}; allowed keys are {sorted(ALLOWED_ACTION_KEYS)}")
             keys = sorted(set(keys_part.lower()))
-        per_frame.extend([keys for _ in range(int(duration))])
+        # Fresh list per frame: repeated frames must NOT alias one list object
+        # (callers could mutate a frame and silently edit all its repeats).
+        per_frame.extend([list(keys) for _ in range(int(duration))])
     return per_frame
 
 

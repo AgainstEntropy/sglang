@@ -25,9 +25,11 @@ from sglang.multimodal_gen.runtime.models.dits.sana_wm_refiner_transformer impor
     unpack_latents,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
+from . import parity_probe
 from .refiner import (
     STAGE_2_DISTILLED_SIGMA_VALUES,
     SanaWMLTX2RefinerStage,
+    _as_additive_attention_mask,
     _refiner_config_value,
     _unwrap_diffusers_ltx2_refiner,
     log_sana_wm_tensor_stats,
@@ -260,9 +262,10 @@ class _RefinerCore:
     ):
         transformer = self.transformer
         batch = hidden_states.size(0)
-        if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
-            encoder_attention_mask = (1 - encoder_attention_mask.to(hidden_states.dtype)) * -10000.0
-            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+        if encoder_attention_mask is not None:
+            encoder_attention_mask = _as_additive_attention_mask(
+                encoder_attention_mask, hidden_states.dtype
+            )
         hidden_states = transformer.proj_in(hidden_states)
         temb, embedded_timestep = transformer.time_embed(
             timestep.flatten(), batch_size=batch, hidden_dtype=hidden_states.dtype,
@@ -379,17 +382,12 @@ class RefinerChunkRunner:
     def refine_block(self, *, block_idx, clean_block, block_start, block_end, sink_seed_frames=None):
         # parity harness (env-gated, no-op in prod): per-block input/config/output
         # checksums; both the batch stage and the realtime stage run through here.
-        _probe_dir = __import__("os").environ.get("SANAWM_RT_DUMP_DIR") or __import__(
-            "os"
-        ).environ.get("SANAWM_FORK_DUMP_DIR")
+        _probe_dir = parity_probe.probe_dir(
+            parity_probe.ENV_RT_DUMP, parity_probe.ENV_FORK_DUMP
+        )
         _probe = None
         if _probe_dir:
-            def _ck(t):
-                return (
-                    (tuple(t.shape), float(t.detach().float().double().sum().item()))
-                    if t is not None
-                    else None
-                )
+            _ck = parity_probe.checksum
             _probe = {
                 "block_idx": int(block_idx),
                 "block_start": int(block_start),
@@ -479,12 +477,9 @@ class RefinerChunkRunner:
                     self.history_kv_post[layer_idx] = (old[0][:, -keep_tokens:], old[1][:, -keep_tokens:])
             self.history_frames = self.max_history_frames
         if _probe is not None:
-            _probe["refined"] = (
-                tuple(x_t.shape),
-                float(x_t.detach().float().double().sum().item()),
-            )
-            torch.save(
-                _probe, f"{_probe_dir}/refiner_probe_{_probe['block_idx']:03d}.pt"
+            _probe["refined"] = parity_probe.checksum(x_t)
+            parity_probe.dump_obj(
+                _probe_dir, f"refiner_probe_{_probe['block_idx']:03d}", _probe
             )
         return x_t
 

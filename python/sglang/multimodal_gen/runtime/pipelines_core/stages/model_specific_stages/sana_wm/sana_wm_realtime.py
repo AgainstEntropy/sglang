@@ -22,12 +22,18 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.base import (
     PipelineStage,
     StageParallelismType,
 )
+from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import (
+    scale_and_shift_latents,
+)
 
 # Incremental stage-1 session, chunked LTX-2 refiner runner, and causal-VAE chunk decode.
+from . import parity_probe
 from .realtime import (
     SanaWMRealtimeSession,
 )
 from .sana_wm_base import (
+    _SANA_WM_DEFAULT_ROTATION_SPEED_DEG,
+    _SANA_WM_DEFAULT_TRANSLATION_SPEED,
     SanaWMBeforeDenoisingStage,
     configure_sana_wm_ltx2_vae_for_long_video,
 )
@@ -49,7 +55,10 @@ from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
 from .utils import (
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
     action_string_to_c2w,
+    normalize_camera_actions,
     estimate_intrinsics_with_pi3x,
     load_camera,
     load_intrinsics,
@@ -61,8 +70,10 @@ from .utils import (
 
 logger = init_logger(__name__)
 
-SANA_WM_HEIGHT = 704
-SANA_WM_WIDTH = 1280
+# Single source for the SANA-WM pixel resolution (utils.TARGET_HEIGHT/WIDTH);
+# local aliases kept for readability at the many call sites in this module.
+SANA_WM_HEIGHT = TARGET_HEIGHT
+SANA_WM_WIDTH = TARGET_WIDTH
 DEFAULT_REFINER_BLOCK_SIZE = 3
 DEFAULT_REFINER_KV_MAX_FRAMES = 11
 
@@ -87,16 +98,7 @@ def _as_int_tuple(values: Any, default: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def _normalize_camera_actions(payload: Any) -> list[list[str]]:
-    if payload is None:
-        return []
-    if not isinstance(payload, list):
-        raise ValueError("camera_actions must be list[list[str]]")
-    out: list[list[str]] = []
-    for item in payload:
-        if not isinstance(item, list):
-            raise ValueError("camera_actions must be list[list[str]]")
-        out.append([str(key).lower() for key in item])
-    return out
+    return normalize_camera_actions(payload, allow_none=True)
 
 
 def _actions_to_action_string(actions: list[list[str]]) -> str:
@@ -239,8 +241,8 @@ class SanaWMStreamingState(BaseRealtimeState):
         # Per-conv decoder cache threaded through vae.decode_chunk across chunks.
         self.conv_cache: dict | None = None
         self.latent_t = 0
-        self.translation_speed = 0.04
-        self.rotation_speed_deg = 1.2
+        self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
+        self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
 
     def dispose(self):
         self.conv_cache = None
@@ -271,8 +273,8 @@ class SanaWMStreamingState(BaseRealtimeState):
         self.next_ref_idx = 0
         self.next_dec_idx = 0
         self.latent_t = 0
-        self.translation_speed = 0.04
-        self.rotation_speed_deg = 1.2
+        self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
+        self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
         self.latents = None
         self.refined_full = None
         self.rollover_first_latent = None
@@ -606,20 +608,8 @@ class SanaWMRealtimeStage(PipelineStage):
         latents: torch.Tensor,
         server_args: ServerArgs,
     ) -> torch.Tensor:
-        """De-normalize latents before VAE decode."""
-        scaling_factor, shift_factor = server_args.pipeline_config.get_decode_scale_and_shift(
-            latents.device, latents.dtype, self.vae
-        )
-        if isinstance(scaling_factor, torch.Tensor):
-            latents = latents / scaling_factor.to(latents.device, latents.dtype)
-        else:
-            latents = latents / scaling_factor
-        if shift_factor is not None:
-            if isinstance(shift_factor, torch.Tensor):
-                latents = latents + shift_factor.to(latents.device, latents.dtype)
-            else:
-                latents = latents + shift_factor
-        return latents
+        """De-normalize latents before VAE decode (shared implementation)."""
+        return scale_and_shift_latents(latents, server_args, self.vae)
 
     @torch.inference_mode()
     def _decode_chunk(
@@ -740,10 +730,9 @@ class SanaWMRealtimeStage(PipelineStage):
             generator=generator,
         )
         latents[:, :, :1] = first_latent
-        if __import__("os").environ.get("SANAWM_RT_DUMP_DIR"):  # parity harness (no-op in prod)
-            _d = __import__("os").environ["SANAWM_RT_DUMP_DIR"]
-            __import__("pathlib").Path(_d).mkdir(parents=True, exist_ok=True)
-            torch.save(latents.detach().float().cpu(), f"{_d}/noise_buffer.pt")
+        parity_probe.dump_tensor(  # parity harness (no-op in prod)
+            parity_probe.probe_dir(parity_probe.ENV_RT_DUMP), "noise_buffer", latents
+        )
 
         cond = batch.prompt_embeds[0].to(device=device, dtype=weight_dtype)
         cond_mask = (
@@ -773,12 +762,12 @@ class SanaWMRealtimeStage(PipelineStage):
         state.translation_speed = _motion_param(
             batch,
             "translation_speed",
-            0.04 if translation_speed is None else translation_speed,
+            _SANA_WM_DEFAULT_TRANSLATION_SPEED if translation_speed is None else translation_speed,
         )
         state.rotation_speed_deg = _motion_param(
             batch,
             "rotation_speed_deg",
-            1.2 if rotation_speed_deg is None else rotation_speed_deg,
+            _SANA_WM_DEFAULT_ROTATION_SPEED_DEG if rotation_speed_deg is None else rotation_speed_deg,
         )
         state.static_c2w = self._prepare_static_camera(
             batch,

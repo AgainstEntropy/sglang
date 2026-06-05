@@ -479,9 +479,11 @@ class TestSanaWMBeforeDenoisingStage(_GlobalStageArgsMixin, unittest.TestCase):
         self.assertGreater(abs(float(strafed[-1, 0, 2])), 1e-4)
 
     def test_action_string_rejects_unknown_keys_and_bad_duration(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unknown keys"):
+        # Error wording comes from the canonical utils.parse_action_string
+        # (parse_sana_wm_action_string is an alias).
+        with self.assertRaisesRegex(ValueError, "unknown action keys"):
             parse_sana_wm_action_string("x-1")
-        with self.assertRaisesRegex(ValueError, "non-positive"):
+        with self.assertRaisesRegex(ValueError, "invalid duration"):
             parse_sana_wm_action_string("w-0")
 
     def test_vae_encode_image_extracts_latent_dist_and_normalizes_ltx2(self) -> None:

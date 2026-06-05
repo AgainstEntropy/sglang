@@ -854,11 +854,14 @@ class SanaWMTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         # parity harness (env-gated, no-op in prod): on the FIRST sink-path call
         # (frame_index not None), checksum the pre-block tensors and x after every
         # block to localize where the two execution paths first diverge.
-        _probe_path = __import__("os").environ.get("SANAWM_BLOCK_PROBE")
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm import (
+            parity_probe,
+        )
+
+        _probe_path = __import__("os").environ.get(parity_probe.ENV_BLOCK_PROBE)
         _probe = None
         if _probe_path and frame_index is not None and not getattr(self, "_block_probe_done", False):
-            def _ck(t):
-                return (tuple(t.shape), float(t.detach().double().sum().item())) if t is not None else None
+            _ck = parity_probe.checksum
             _probe = {
                 "x_embed": _ck(x), "t6": _ck(t6), "y": _ck(y),
                 "freqs": (tuple(freqs.shape), float(freqs.real.detach().double().sum().item()),
@@ -884,9 +887,7 @@ class SanaWMTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             )
             new_cache.append(block_cache)
             if _probe is not None:
-                _probe[f"x_after_block_{i:02d}"] = (
-                    tuple(x.shape), float(x.detach().double().sum().item())
-                )
+                _probe[f"x_after_block_{i:02d}"] = parity_probe.checksum(x)
         if _probe is not None:
             torch.save(_probe, _probe_path)
             self._block_probe_done = True

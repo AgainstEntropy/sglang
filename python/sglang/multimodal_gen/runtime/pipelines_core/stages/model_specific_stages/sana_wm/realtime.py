@@ -24,6 +24,7 @@ from sglang.multimodal_gen.runtime.models.dits.sana_wm import _NUM_STREAM_CACHE_
 from sglang.multimodal_gen.runtime.models.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
 )
+from . import parity_probe
 from .streaming import (
     SanaWMStreamingDenoisingStage,
 )
@@ -208,18 +209,13 @@ class SanaWMRealtimeSession:
             self.kv_cache, self.chunk_idx, self.chunk_indices,
             self.num_cached_blocks, self.sink_token, self.num_blocks,
         )
-        _rt_dump_dir = __import__("os").environ.get("SANAWM_RT_DUMP_DIR")
-        if _rt_dump_dir:  # parity harness: accumulated-KV checksums
-            _probe = {"sink_num": sink_num}
-            for _b, _slots in enumerate(chunk_kv):
-                for _s, _t in enumerate(_slots):
-                    if _t is not None:
-                        _probe[f"b{_b:02d}s{_s}"] = (
-                            tuple(_t.shape),
-                            float(_t.detach().double().sum().item()),
-                        )
-            __import__("pathlib").Path(_rt_dump_dir).mkdir(parents=True, exist_ok=True)
-            torch.save(_probe, f"{_rt_dump_dir}/kv_probe_{self.chunk_idx:03d}.pt")
+        _dump_dir = parity_probe.probe_dir(parity_probe.ENV_RT_DUMP)
+        if _dump_dir:  # parity harness: accumulated-KV checksums
+            parity_probe.dump_obj(
+                _dump_dir,
+                f"kv_probe_{self.chunk_idx:03d}",
+                parity_probe.kv_cache_checksums(chunk_kv, sink_num),
+            )
         frame_index = (
             torch.arange(start_f, end_f, device=self.device, dtype=torch.long)
             if sink_num > 0 else None
@@ -235,25 +231,21 @@ class SanaWMRealtimeSession:
 
         embeds, mask = self._embeds_for_step()
         prope = (camera_conditions, chunk_plucker)
-        _rt_dump = __import__("os").environ.get("SANAWM_RT_DUMP_DIR")
-        if _rt_dump:  # parity harness: per-chunk conditioning fed to forward_long
-            _p = __import__("pathlib").Path(_rt_dump)
-            _p.mkdir(parents=True, exist_ok=True)
-
-            def _rdump(_name, _t):
-                if _t is not None:
-                    torch.save(_t.detach().float().cpu(), _p / f"{_name}.pt")
-
-            _rdump(f"cond_camera_{self.chunk_idx:03d}", camera_conditions)
-            _rdump(f"cond_plucker_{self.chunk_idx:03d}", chunk_plucker)
+        if _dump_dir:  # parity harness: per-chunk conditioning fed to forward_long
+            parity_probe.dump_tensor(
+                _dump_dir, f"cond_camera_{self.chunk_idx:03d}", camera_conditions
+            )
+            parity_probe.dump_tensor(
+                _dump_dir, f"cond_plucker_{self.chunk_idx:03d}", chunk_plucker
+            )
             if self.chunk_idx == 0:
-                _rdump("cond_embeds", embeds)
-                _rdump("cond_mask", mask)
-                _fp = {  # parity harness: weights fingerprint
-                    n: float(p.detach().float().abs().sum().item())
-                    for n, p in self.transformer.named_parameters()
-                }
-                torch.save(_fp, _p / "dit_fingerprint.pt")
+                parity_probe.dump_tensor(_dump_dir, "cond_embeds", embeds)
+                parity_probe.dump_tensor(_dump_dir, "cond_mask", mask)
+                parity_probe.dump_obj(
+                    _dump_dir,
+                    "dit_fingerprint",
+                    parity_probe.weights_fingerprint(self.transformer),
+                )
         self._scheduler.set_timesteps(sigmas=self._sigmas, device=self.device)
         for t in self._scheduler.timesteps:
             lat_in = torch.cat([chunk_lat, chunk_lat], dim=0) if self.use_cfg else chunk_lat
@@ -275,10 +267,9 @@ class SanaWMRealtimeSession:
             if self.use_cfg:
                 nu, nt = noise_pred.chunk(2)
                 noise_pred = nu + self.cfg_scale * (nt - nu)
-            if _rt_dump and self.chunk_idx == 0:  # parity harness: per-step model output
-                torch.save(
-                    noise_pred.detach().float().cpu(),
-                    _p / f"noise_pred_c0_t{int(t.item())}.pt",
+            if _dump_dir and self.chunk_idx == 0:  # parity harness: per-step model output
+                parity_probe.dump_tensor(
+                    _dump_dir, f"noise_pred_c0_t{int(t.item())}", noise_pred
                 )
             denoised = self._scheduler.step(
                 -noise_pred.reshape(B, C, -1).transpose(1, 2),
@@ -318,13 +309,11 @@ class SanaWMRealtimeSession:
         else:
             self.latents = torch.cat([self.latents, chunk_lat], dim=2)
             new_frames = chunk_lat
-        _rt_dump = __import__("os").environ.get("SANAWM_RT_DUMP_DIR")
-        if _rt_dump:  # parity harness (no-op in production): per-chunk stage-1 latent
-            __import__("pathlib").Path(_rt_dump).mkdir(parents=True, exist_ok=True)
-            torch.save(
-                chunk_lat.detach().float().cpu(),
-                f"{_rt_dump}/stage1_{self.chunk_idx:03d}_{start_f}_{end_f}.pt",
-            )
+        parity_probe.dump_tensor(  # parity harness: per-chunk stage-1 latent
+            parity_probe.probe_dir(parity_probe.ENV_RT_DUMP),
+            f"stage1_{self.chunk_idx:03d}_{start_f}_{end_f}",
+            chunk_lat,
+        )
         self.chunk_idx += 1
 
         if decode and self.vae is not None and hasattr(self.vae, "decode_chunk"):

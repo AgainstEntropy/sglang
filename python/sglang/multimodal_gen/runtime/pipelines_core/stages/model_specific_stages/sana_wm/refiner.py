@@ -20,6 +20,10 @@ from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager im
 from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload import (
     LayerwiseOffloadableModuleMixin,
 )
+from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import (
+    STAGE_2_DISTILLED_SIGMA_VALUES as _STAGE_2_DISTILLED_SIGMA_VALUES,
+)
+from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import pack_text_embeds
 from sglang.multimodal_gen.runtime.models.dits.sana_wm_refiner_transformer import (
     pack_latents,
     unpack_latents,
@@ -41,7 +45,9 @@ from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 logger = init_logger(__name__)
 
 # Distilled 3-step sigma schedule, matches NVlabs `inference_sana_wm.py`.
-STAGE_2_DISTILLED_SIGMA_VALUES: tuple[float, ...] = (0.909375, 0.725, 0.421875, 0.0)
+# Re-exported here for the sana_wm package; canonical value lives in the LTX-2
+# pipeline config (shared with LTX2TwoStagePipeline).
+STAGE_2_DISTILLED_SIGMA_VALUES: tuple[float, ...] = _STAGE_2_DISTILLED_SIGMA_VALUES
 
 # Default Gemma-3 token budget for the refiner prompt encoder.
 _REFINER_TEXT_MAX_LENGTH = 1024
@@ -142,41 +148,20 @@ def _pack_text_embeds(
     scale_factor: int = 8,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """SANA-WM-specific text-embed pooling.
+    """Gemma-3 masked min-max text-embed pooling for the LTX-2 refiner.
 
-    Stacks per-layer Gemma-3 hidden states (`text_hidden_states` shape
-    `(B, L, D, n_layers)`), applies a masked min-max normalization across the
-    (token, layer) axes, scales by `scale_factor`, then flattens layers into
-    the channel dim, padded positions zeroed out. Matches NVlabs upstream.
+    Delegates to the framework-wide LTX-2 ``pack_text_embeds`` (verified
+    BITWISE-identical, incl. bf16 and both padding sides) — a private fork here
+    would be the same drift failure mode as the four realtime<->batch parity
+    bugs.
     """
-    batch_size, seq_len, hidden_dim, _ = text_hidden_states.shape
-    device = text_hidden_states.device
-    original_dtype = text_hidden_states.dtype
-
-    token_indices = torch.arange(seq_len, device=device).unsqueeze(0)
-    if padding_side == "right":
-        mask = token_indices < sequence_lengths[:, None]
-    elif padding_side == "left":
-        start_indices = seq_len - sequence_lengths[:, None]
-        mask = token_indices >= start_indices
-    else:
-        raise ValueError(f"padding_side must be 'left' or 'right', got {padding_side}")
-    mask = mask[:, :, None, None]
-
-    masked = text_hidden_states.masked_fill(~mask, 0.0)
-    valid_positions = (sequence_lengths * hidden_dim).view(batch_size, 1, 1, 1)
-    masked_mean = masked.sum(dim=(1, 2), keepdim=True) / (valid_positions + eps)
-    x_min = text_hidden_states.masked_fill(~mask, float("inf")).amin(
-        dim=(1, 2), keepdim=True
+    return pack_text_embeds(
+        text_hidden_states,
+        sequence_lengths,
+        padding_side=padding_side,
+        scale_factor=scale_factor,
+        eps=eps,
     )
-    x_max = text_hidden_states.masked_fill(~mask, float("-inf")).amax(
-        dim=(1, 2), keepdim=True
-    )
-    normalized = (text_hidden_states - masked_mean) / (x_max - x_min + eps)
-    normalized = (normalized * scale_factor).flatten(2)
-
-    flat_mask = mask.squeeze(-1).expand(-1, -1, normalized.shape[-1])
-    return normalized.masked_fill(~flat_mask, 0.0).to(dtype=original_dtype)
 
 
 def _refiner_config_value(transformer: nn.Module, name: str) -> Any:

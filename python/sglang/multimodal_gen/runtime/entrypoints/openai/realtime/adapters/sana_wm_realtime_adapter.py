@@ -33,6 +33,7 @@ from sglang.multimodal_gen.runtime.realtime.condition_events import (
     ControlStateTransition,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.utils import (
+    normalize_camera_actions,
     parse_action_string,
 )
 from sglang.multimodal_gen.runtime.server_args import get_global_server_args
@@ -194,14 +195,9 @@ class SanaWMRealtimeAdapter(RealtimeModelAdapter):
 
     @staticmethod
     def _validate_camera_actions(payload: Any) -> list[list[str]]:
-        if not isinstance(payload, list):
-            raise ValueError("camera_actions event payload must be list[list[str]]")
-        normalized = []
-        for frame_actions in payload:
-            if not isinstance(frame_actions, list):
-                raise ValueError("camera_actions event payload must be list[list[str]]")
-            normalized.append([str(action).lower() for action in frame_actions])
-        return normalized
+        return normalize_camera_actions(
+            payload, error_label="camera_actions event payload"
+        )
 
     @staticmethod
     def _raw_frame_count(result: OutputBatch) -> int | None:
@@ -412,7 +408,17 @@ class SanaWMRealtimeAdapter(RealtimeModelAdapter):
         batch.block_idx = chunk.index
         batch.realtime_event_id = self._state(session).latest_sampled_event_id
         if session.request is not None:
+            # Forward the full transport config like the LingBot adapter does —
+            # the shared RawRGB output adapter / realtime_video_api consume
+            # preview width + pacing too; dropping them silently disabled both
+            # features for SANA-WM sessions.
             batch.realtime_output_format = session.request.realtime_output_format
+            batch.realtime_preview_max_width = (
+                session.request.realtime_preview_max_width
+            )
+            batch.realtime_output_pacing = bool(
+                session.request.realtime_output_pacing
+            )
         return batch
 
     async def send_output(

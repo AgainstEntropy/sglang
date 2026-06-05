@@ -40,7 +40,7 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
-from .utils import action_string_to_c2w
+from .utils import action_string_to_c2w, parse_action_string
 
 logger = init_logger(__name__)
 
@@ -54,46 +54,12 @@ _SANA_WM_DEFAULT_VAE_TILE_STRIDE_FRAMES = 64
 _SANA_WM_DEFAULT_TRANSLATION_SPEED = 0.04  # match official streaming (STREAMING_TRANSLATION_SPEED)
 _SANA_WM_DEFAULT_ROTATION_SPEED_DEG = 1.2
 _SANA_WM_DEFAULT_PITCH_LIMIT_DEG = 85.0
-_SANA_WM_ALLOWED_ACTION_KEYS: frozenset[str] = frozenset("wasdijkl")
 _SANA_WM_CONDITION_IMAGE_PREPROCESS_KEY = "sana_wm_condition_image_preprocess"
 
-
-def parse_sana_wm_action_string(action: str) -> list[list[str]]:
-    """Parse upstream SANA-WM WASD/IJKL DSL into per-frame held keys."""
-
-    cleaned = "".join(action.replace("，", ",").split())
-    if not cleaned:
-        raise ValueError("SANA-WM action string is empty")
-
-    per_frame: list[list[str]] = []
-    for segment in cleaned.split(","):
-        if not segment or "-" not in segment:
-            raise ValueError(
-                f"Invalid SANA-WM action segment {segment!r}: "
-                "expected '<keys>-<duration>'."
-            )
-        keys_part, dur_str = segment.rsplit("-", 1)
-        if not dur_str.isdigit() or int(dur_str) <= 0:
-            raise ValueError(
-                f"SANA-WM action segment {segment!r} has a non-positive "
-                f"duration {dur_str!r}."
-            )
-
-        keys_lower = keys_part.lower()
-        if keys_lower == "none":
-            keys: list[str] = []
-        else:
-            bad = sorted(
-                {c for c in keys_lower if c not in _SANA_WM_ALLOWED_ACTION_KEYS}
-            )
-            if bad:
-                raise ValueError(
-                    f"SANA-WM action segment {segment!r} contains unknown keys "
-                    f"{bad}; allowed: {''.join(sorted(_SANA_WM_ALLOWED_ACTION_KEYS))}."
-                )
-            keys = sorted(set(keys_lower))
-        per_frame.extend([list(keys) for _ in range(int(dur_str))])
-    return per_frame
+# Single action-DSL parser for both paths (utils.parse_action_string is the
+# canonical, official-matching implementation); the old in-house duplicate body
+# is gone, the public name stays for existing callers/tests.
+parse_sana_wm_action_string = parse_action_string
 
 
 def sana_wm_action_to_camera_to_world(
@@ -849,12 +815,7 @@ class SanaWMBeforeDenoisingStage(PipelineStage):
         """Encode a single image frame through the VAE encoder."""
         vae = self.vae
         configure_sana_wm_ltx2_vae_for_long_video(vae, self.pipeline_config)
-        vae_dtype_map = {
-            "bf16": torch.bfloat16,
-            "fp16": torch.float16,
-            "fp32": torch.float32,
-        }
-        vae_dtype = vae_dtype_map.get(
+        vae_dtype = PRECISION_TO_TYPE.get(
             self.pipeline_config.vae_precision, torch.bfloat16
         )
 

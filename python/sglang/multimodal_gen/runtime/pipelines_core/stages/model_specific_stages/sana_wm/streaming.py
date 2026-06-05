@@ -57,10 +57,10 @@ from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
 # --- debug parity harness (gated by env; no-op in production) ---
 import os as _os
-from pathlib import Path as _Path
 
-_SANAWM_INJECT_DIR = _os.environ.get("SANAWM_INJECT_DIR")
-_SANAWM_FORK_DUMP_DIR = _os.environ.get("SANAWM_FORK_DUMP_DIR")
+from . import parity_probe
+
+_SANAWM_INJECT_DIR = _os.environ.get(parity_probe.ENV_INJECT)
 
 
 class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
@@ -117,10 +117,10 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
         def _iload(_name):
             return torch.load(f"{_SANAWM_INJECT_DIR}/{_name}.pt", map_location=device)
 
+        _dump_dir = parity_probe.probe_dir(parity_probe.ENV_FORK_DUMP)
+
         def _fdump(_name, _t):
-            if _SANAWM_FORK_DUMP_DIR and _t is not None:
-                _Path(_SANAWM_FORK_DUMP_DIR).mkdir(parents=True, exist_ok=True)
-                torch.save(_t.detach().float().cpu(), f"{_SANAWM_FORK_DUMP_DIR}/{_name}.pt")
+            parity_probe.dump_tensor(_dump_dir, _name, _t)
 
         if _SANAWM_INJECT_DIR:  # parity harness: run the OFFICIAL's exact stage-1 inputs
             latents = _iload("z_full_initial").to(device=device, dtype=target_dtype).clone()
@@ -222,13 +222,12 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
             assert transformer is not None
             self.transformer = transformer
             num_blocks = len(transformer.blocks)
-            if _SANAWM_FORK_DUMP_DIR:  # parity harness: weights fingerprint
-                _fp = {
-                    n: float(p.detach().float().abs().sum().item())
-                    for n, p in transformer.named_parameters()
-                }
-                _Path(_SANAWM_FORK_DUMP_DIR).mkdir(parents=True, exist_ok=True)
-                torch.save(_fp, f"{_SANAWM_FORK_DUMP_DIR}/dit_fingerprint.pt")
+            if _dump_dir:  # parity harness: weights fingerprint
+                parity_probe.dump_obj(
+                    _dump_dir,
+                    "dit_fingerprint",
+                    parity_probe.weights_fingerprint(transformer),
+                )
             kv_cache = [
                 [[None] * _NUM_STREAM_CACHE_SLOTS for _ in range(num_blocks)]
                 for _ in range(num_chunks)
@@ -248,16 +247,12 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
                 chunk_kv, sink_num = self._accumulate_kv_cache(
                     kv_cache, chunk_idx, chunk_indices, num_cached_blocks, sink_token, num_blocks
                 )
-                if _SANAWM_FORK_DUMP_DIR:  # parity harness: accumulated-KV checksums
-                    _probe = {"sink_num": sink_num}
-                    for _b, _slots in enumerate(chunk_kv):
-                        for _s, _t in enumerate(_slots):
-                            if _t is not None:
-                                _probe[f"b{_b:02d}s{_s}"] = (
-                                    tuple(_t.shape),
-                                    float(_t.detach().double().sum().item()),
-                                )
-                    torch.save(_probe, f"{_SANAWM_FORK_DUMP_DIR}/kv_probe_{chunk_idx:03d}.pt")
+                if _dump_dir:  # parity harness: accumulated-KV checksums
+                    parity_probe.dump_obj(
+                        _dump_dir,
+                        f"kv_probe_{chunk_idx:03d}",
+                        parity_probe.kv_cache_checksums(chunk_kv, sink_num),
+                    )
                 start_f = chunk_indices[chunk_idx]
                 end_f = chunk_indices[chunk_idx + 1]
                 chunk_frames = end_f - start_f
