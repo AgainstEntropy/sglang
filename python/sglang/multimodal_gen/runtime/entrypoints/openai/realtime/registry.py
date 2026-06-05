@@ -28,44 +28,32 @@ def _register_builtin_realtime_model_adapters() -> None:
     if _BUILTIN_ADAPTERS_REGISTERED:
         return
 
-    from sglang.multimodal_gen.configs.pipeline_configs.sana_wm import (
-        SanaWMRealtimeConfig,
+    from sglang.multimodal_gen.configs.pipeline_configs.lingbot_world import (
+        LingBotWorldCausalDMDConfig,
     )
-    from sglang.multimodal_gen.runtime.entrypoints.openai.realtime.adapters.sana_wm_realtime_adapter import (
-        SanaWMRealtimeAdapter,
+    from sglang.multimodal_gen.runtime.entrypoints.openai.realtime.adapters.lingbot_world_realtime_adapter import (
+        LingBotWorldRealtimeAdapter,
     )
 
     register_realtime_model_adapter(
-        SanaWMRealtimeConfig,
-        SanaWMRealtimeAdapter,
+        LingBotWorldCausalDMDConfig,
+        LingBotWorldRealtimeAdapter,
     )
     _BUILTIN_ADAPTERS_REGISTERED = True
-
-
-def _get_realtime_model_adapter_cls(
-    pipeline_config: object,
-) -> type[RealtimeModelAdapter] | None:
-    _register_builtin_realtime_model_adapters()
-
-    for config_cls in type(pipeline_config).__mro__:
-        adapter_cls = _REALTIME_ADAPTER_REGISTRY.get(config_cls)
-        if adapter_cls is not None:
-            return adapter_cls
-    return None
-
-
-def has_realtime_model_adapter(server_args: ServerArgs) -> bool:
-    return _get_realtime_model_adapter_cls(server_args.pipeline_config) is not None
 
 
 def get_realtime_model_adapter(
     server_args: ServerArgs,
 ) -> RealtimeModelAdapter:
-    adapter_cls = _get_realtime_model_adapter_cls(server_args.pipeline_config)
-    if adapter_cls is not None:
-        return adapter_cls()
+    _register_builtin_realtime_model_adapters()
+
+    pipeline_config = server_args.pipeline_config
+    for config_cls in type(pipeline_config).__mro__:
+        adapter_cls = _REALTIME_ADAPTER_REGISTRY.get(config_cls)
+        if adapter_cls is not None:
+            return adapter_cls()
 
     raise ValueError(
         "Realtime video is not supported for pipeline config "
-        f"{type(server_args.pipeline_config).__name__}; no realtime adapter is registered."
+        f"{type(pipeline_config).__name__}; no realtime adapter is registered."
     )
