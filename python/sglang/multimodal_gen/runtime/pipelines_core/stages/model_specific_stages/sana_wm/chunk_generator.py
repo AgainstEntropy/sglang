@@ -224,6 +224,22 @@ class SanaWMChunkGenerator:
             self.kv_cache, self.chunk_idx, self.chunk_indices,
             self.num_cached_blocks, self.sink_token, self.num_blocks,
         )
+        # Null out per-chunk cache entries the accumulator can never read again
+        # (it only reads the sink chunk + the last num_cached_blocks chunks; the
+        # window mirrors accumulate_kv_cache). Without this an open-ended session
+        # leaks the softmax blocks' concat K/V at ~GB/min; for fixed horizons it
+        # is numerically inert (stale entries are never read again).
+        if self.chunk_idx > 0 and self.num_cached_blocks > 0:
+            start_chunk = max(self.chunk_idx - self.num_cached_blocks, 0)
+            valid = list(range(start_chunk, self.chunk_idx))
+            if self.sink_token:
+                sink_start = max(self.chunk_idx - self.num_cached_blocks + 1, 0)
+                if sink_start > 0:
+                    valid = [0] + list(range(sink_start, self.chunk_idx))
+            SanaWMSelfForcingScheduler.evict_stale_kv_cache(
+                self.kv_cache, self.chunk_idx, valid,
+                self.num_cached_blocks, self.num_blocks,
+            )
         _dump_dir = parity_probe.probe_dir(parity_probe.ENV_RT_DUMP)
         if _dump_dir:  # parity harness: accumulated-KV checksums
             parity_probe.dump_obj(

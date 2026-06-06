@@ -102,6 +102,46 @@ def test_chunk_generator_multi_step_carries_state(_global_args):
     assert torch.allclose(generator.latents[:, :, 0], first_latent[:, :, 0])
 
 
+def test_chunk_generator_open_ended_seeded_and_evicts(_global_args):
+    """Open-ended mode: no noise_buffer / total_latent_frames.
+
+    Uniform chunk grid, per-chunk noise from the seeded fallback generator
+    (reproducible), and stale per-chunk KV entries evicted so an unbounded
+    session does not leak the softmax blocks' concat K/V."""
+    m = _tiny_model()
+
+    def _run():
+        g = SanaWMChunkGenerator(
+            m, denoising_step_list=(1000, 700, 0), num_frame_per_block=2,
+            num_cached_blocks=2, sink_token=True,
+            cfg_scale=1.0, device=torch.device("cpu"), dtype=torch.float64,
+        )
+        fl = torch.ones(1, MC, 1, 2, 2, dtype=torch.float64)
+        pe = torch.zeros(1, 4, 32, dtype=torch.float64)
+        g.reset(fl, pe, seed=1234)
+        for _ in range(5):
+            g.step(n_frames=2)
+        return g
+
+    g = _run()
+    # Uniform grid: chunk 0 = cond + 2, then +2 per step.
+    assert g.latents.shape[2] == 11
+    assert g.chunk_indices == [0, 3, 5, 7, 9, 11]
+    assert torch.isfinite(g.latents).all()
+
+    # Eviction: only the sink chunk + the last num_cached_blocks chunks keep
+    # their cache entries (mirrors accumulate_kv_cache's read window).
+    def _has_any(entry):
+        return any(slot is not None for block in entry for slot in block)
+
+    kept = [i for i, e in enumerate(g.kv_cache) if _has_any(e)]
+    assert kept == [0, 3, 4]
+
+    # Seeded fallback noise is reproducible run-to-run.
+    g2 = _run()
+    assert torch.equal(g.latents, g2.latents)
+
+
 def test_chunk_generator_reset_clears_state(_global_args):
     m = _tiny_model()
     generator = SanaWMChunkGenerator(

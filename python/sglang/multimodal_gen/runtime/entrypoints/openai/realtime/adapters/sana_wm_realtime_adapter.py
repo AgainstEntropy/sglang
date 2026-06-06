@@ -214,7 +214,18 @@ class SanaWMRealtimeAdapter(RealtimeModelAdapter):
             raise ValueError("SANA-WM realtime requires first_frame")
 
         request.size = SANA_WM_DEFAULT_SIZE
-        request.num_frames = int(request.num_frames or SANA_WM_DEFAULT_NUM_FRAMES)
+        if request.num_frames is not None:
+            request.num_frames = int(request.num_frames)
+        else:
+            # Open-ended session: keep num_frames unset so prepare_next_request
+            # samples uniform action chunks (no front-loaded segmentation), and
+            # flag the stage explicitly via condition_inputs —
+            # build_sampling_params strips None fields, so the per-chunk batch
+            # would otherwise carry the SamplingParams default num_frames.
+            request.condition_inputs = {
+                **(request.condition_inputs or {}),
+                "sana_wm_open_ended": True,
+            }
         request.fps = int(request.fps or SANA_WM_DEFAULT_FPS)
         request.num_inference_steps = int(
             request.num_inference_steps or SANA_WM_DEFAULT_STEPS

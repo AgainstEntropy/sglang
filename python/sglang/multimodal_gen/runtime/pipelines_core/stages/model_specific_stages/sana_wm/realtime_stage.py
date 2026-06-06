@@ -175,6 +175,9 @@ class SanaWMStreamingState(BaseRealtimeState):
     def __init__(self):
         super().__init__()
         self.initialized = False
+        # True => no fixed horizon (request without num_frames): uniform chunk
+        # grid + per-chunk seeded noise; batch parity is undefined in this mode.
+        self.open_ended = False
         self.prompt: str = ""
         self.image: Image.Image | None = None
         self.intrinsics_image: Image.Image | None = None
@@ -208,13 +211,15 @@ class SanaWMStreamingState(BaseRealtimeState):
         self.next_dec_idx = 0
         # Per-conv decoder cache threaded through vae.decode_chunk across chunks.
         self.conv_cache: dict | None = None
-        self.latent_t = 0
+        # Latent horizon; None => open-ended (no cap).
+        self.latent_t: int | None = None
         self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
         self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
 
     def dispose(self):
         self.conv_cache = None
         self.initialized = False
+        self.open_ended = False
         self.prompt = ""
         self.image = None
         self.intrinsics_image = None
@@ -240,7 +245,7 @@ class SanaWMStreamingState(BaseRealtimeState):
         self.n_blocks = 0
         self.next_ref_idx = 0
         self.next_dec_idx = 0
-        self.latent_t = 0
+        self.latent_t = None
         self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
         self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
         self.latents = None
@@ -362,7 +367,15 @@ class SanaWMRealtimeStage(PipelineStage):
         if condition_inputs.get("intrinsics") is not None:
             return _normalize_intrinsics_array(condition_inputs["intrinsics"], num_frames)
         if state.intrinsics_raw is not None:
-            return state.intrinsics_raw
+            cached = state.intrinsics_raw
+            if cached.shape[0] < num_frames:
+                # Open-ended growth: hold the last row (fixed-horizon sessions
+                # cache the full-length array, so this never triggers).
+                pad = np.broadcast_to(
+                    cached[-1:], (num_frames - cached.shape[0],) + cached.shape[1:]
+                )
+                cached = np.concatenate([cached, pad], axis=0)
+            return cached
         if state.intrinsics_image is None:
             raise ValueError("SANA-WM image is not initialized")
         estimated = estimate_intrinsics_with_pi3x(state.intrinsics_image, device)
@@ -391,7 +404,15 @@ class SanaWMRealtimeStage(PipelineStage):
         rotation_speed_deg: float,
     ) -> np.ndarray:
         if state.static_c2w is not None:
-            return state.static_c2w[:num_frames]
+            c2w = state.static_c2w
+            if c2w.shape[0] < num_frames:
+                # Open-ended growth: hold the last pose (fixed-horizon sessions
+                # always precompute the full trajectory, so this never triggers).
+                pad = np.broadcast_to(
+                    c2w[-1:], (num_frames - c2w.shape[0], 4, 4)
+                )
+                c2w = np.concatenate([c2w, pad], axis=0)
+            return c2w[:num_frames]
 
         num_actions = max(0, num_frames - 1)
         actions = list(state.camera_actions[:num_actions])
@@ -416,7 +437,16 @@ class SanaWMRealtimeStage(PipelineStage):
         if state.src_size is None or state.resized_size is None or state.crop_offset is None:
             raise ValueError("SANA-WM crop metadata is not initialized")
 
-        num_frames = int(batch.num_frames)
+        if state.open_ended:
+            # Cover the camera through the END of the next stage-1 chunk
+            # (the per-chunk batch carries the SamplingParams default num_frames,
+            # which is meaningless here). forward_long windows internally.
+            target_latent = state.generator.latents.shape[2] + int(
+                state.refiner_block_size
+            )
+            num_frames = (target_latent - 1) * 8 + 1
+        else:
+            num_frames = int(batch.num_frames)
         condition_inputs = batch.condition_inputs or {}
         if "translation_speed" in condition_inputs:
             state.translation_speed = float(condition_inputs["translation_speed"])
@@ -652,6 +682,19 @@ class SanaWMRealtimeStage(PipelineStage):
             spatial_shape=spatial_shape,
         )
 
+    @staticmethod
+    def _is_open_ended(batch: Req) -> bool:
+        """Open-ended = the init request carried no num_frames.
+
+        The adapter flags this via condition_inputs (build_sampling_params strips
+        None fields, so batch.num_frames would otherwise carry the SamplingParams
+        default and be indistinguishable from an explicit request)."""
+        condition_inputs = batch.condition_inputs or {}
+        if bool(condition_inputs.get("sana_wm_open_ended")):
+            return True
+        num_frames = getattr(batch, "num_frames", None)
+        return num_frames is None or int(num_frames) <= 0
+
     def _initialize_state(
         self,
         batch: Req,
@@ -677,9 +720,17 @@ class SanaWMRealtimeStage(PipelineStage):
         )
         state.prompt = str(batch.prompt)
 
-        num_frames = snap_num_frames(int(batch.num_frames), stride=8)
-        batch.num_frames = num_frames
-        state.max_camera_actions = max(0, num_frames - 1)
+        state.open_ended = self._is_open_ended(batch)
+        if state.open_ended:
+            # Open-ended session (request without num_frames): no fixed horizon.
+            # Uniform chunk grid + per-chunk seeded noise (engine fallback);
+            # parity with the batch pipeline is only defined for fixed horizons.
+            num_frames = None
+            state.max_camera_actions = 0  # unlimited action history
+        else:
+            num_frames = snap_num_frames(int(batch.num_frames), stride=8)
+            batch.num_frames = num_frames
+            state.max_camera_actions = max(0, num_frames - 1)
         self._append_realtime_camera_actions(batch, state)
         if first_latent is None:
             first_latent = self._get_first_frame_latent(
@@ -691,24 +742,29 @@ class SanaWMRealtimeStage(PipelineStage):
             )
         else:
             first_latent = first_latent.to(device=device, dtype=weight_dtype)
-        latent_t = (num_frames - 1) // 8 + 1
-        generator = batch.generator[0] if isinstance(batch.generator, list) else batch.generator
-        if generator is None:
-            generator = torch.Generator(device=device).manual_seed(int(batch.seed))
-        latents = torch.randn(
-            1,
-            first_latent.shape[1],
-            latent_t,
-            first_latent.shape[-2],
-            first_latent.shape[-1],
-            device=device,
-            dtype=weight_dtype,
-            generator=generator,
-        )
-        latents[:, :, :1] = first_latent
-        parity_probe.dump_tensor(  # parity harness (no-op in prod)
-            parity_probe.probe_dir(parity_probe.ENV_RT_DUMP), "noise_buffer", latents
-        )
+        latent_t = None if num_frames is None else (num_frames - 1) // 8 + 1
+        if latent_t is None:
+            # Open-ended: no full-horizon pre-noise; the engine's seeded fallback
+            # generator draws each chunk's noise on demand.
+            latents = None
+        else:
+            generator = batch.generator[0] if isinstance(batch.generator, list) else batch.generator
+            if generator is None:
+                generator = torch.Generator(device=device).manual_seed(int(batch.seed))
+            latents = torch.randn(
+                1,
+                first_latent.shape[1],
+                latent_t,
+                first_latent.shape[-2],
+                first_latent.shape[-1],
+                device=device,
+                dtype=weight_dtype,
+                generator=generator,
+            )
+            latents[:, :, :1] = first_latent
+            parity_probe.dump_tensor(  # parity harness (no-op in prod)
+                parity_probe.probe_dir(parity_probe.ENV_RT_DUMP), "noise_buffer", latents
+            )
 
         cond = batch.prompt_embeds[0].to(device=device, dtype=weight_dtype)
         cond_mask = (
@@ -747,7 +803,13 @@ class SanaWMRealtimeStage(PipelineStage):
         )
         state.static_c2w = self._prepare_static_camera(
             batch,
-            num_frames=num_frames,
+            # Open-ended: seed the static camera with the first chunk's window;
+            # _camera_from_state pads by holding the last pose as the session grows.
+            num_frames=(
+                num_frames
+                if num_frames is not None
+                else int(batch.extra.get("sana_wm_num_frame_per_block", 3)) * 8 + 1
+            ),
             translation_speed=state.translation_speed,
             rotation_speed_deg=state.rotation_speed_deg,
         )
@@ -797,15 +859,19 @@ class SanaWMRealtimeStage(PipelineStage):
         # chunk 0 -> 1 + nfpb frames, each later chunk -> nfpb frames.
         state.latents = generator.latents
         state.latent_t = latent_t
-        state.stage1_chunks = max(
-            0, math.ceil((latent_t - 1) / num_frame_per_block)
-        )
-        active_frames = latent_t - state.sink_size
-        if active_frames <= 0:
-            raise ValueError(
-                f"SANA-WM active latent frames must be positive, got {active_frames}"
+        if latent_t is None:
+            state.stage1_chunks = None
+            state.n_blocks = None
+        else:
+            state.stage1_chunks = max(
+                0, math.ceil((latent_t - 1) / num_frame_per_block)
             )
-        state.n_blocks = math.ceil(active_frames / state.refiner_block_size)
+            active_frames = latent_t - state.sink_size
+            if active_frames <= 0:
+                raise ValueError(
+                    f"SANA-WM active latent frames must be positive, got {active_frames}"
+                )
+            state.n_blocks = math.ceil(active_frames / state.refiner_block_size)
         state.rollover_first_latent = first_latent.detach().clone()
 
         if self.refiner_stage is not None:
@@ -849,7 +915,9 @@ class SanaWMRealtimeStage(PipelineStage):
         horizon ``latent_t`` is reached (triggering a rollover upstream).
         """
         generator = state.generator
-        if generator is None or state.produced_until >= state.latent_t:
+        if generator is None or (
+            state.latent_t is not None and state.produced_until >= state.latent_t
+        ):
             return None
         start_f = generator.latents.shape[2]
         generator.step(
@@ -921,11 +989,15 @@ class SanaWMRealtimeStage(PipelineStage):
         # until the next chunk supplies the rest of their block (the short tail
         # at the horizon end is refined as-is, mirroring batch's last block).
         block_size = int(state.refiner_block_size)
-        horizon = int(state.latent_t)
+        horizon = state.latent_t  # None => open-ended (no cap)
         frontier = state.refined_full.shape[2]
         while True:
             block_start = frontier
-            block_end = min(block_start + block_size, horizon)
+            block_end = (
+                block_start + block_size
+                if horizon is None
+                else min(block_start + block_size, horizon)
+            )
             if block_end <= block_start or block_end > end_f:
                 break
             sink_seed = (
@@ -1018,7 +1090,11 @@ class SanaWMRealtimeStage(PipelineStage):
             else:
                 frames = self._run_stage1_only_tick(state, server_args, vae_dtype=vae_dtype)
 
-            if frames is None and state.rollover_first_latent is not None:
+            if (
+                frames is None
+                and state.rollover_first_latent is not None
+                and not state.open_ended  # open-ended never exhausts its horizon
+            ):
                 first_latent = state.rollover_first_latent
                 intrinsics_raw = (
                     state.intrinsics_raw.copy()
