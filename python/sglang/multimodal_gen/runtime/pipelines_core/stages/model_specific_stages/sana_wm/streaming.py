@@ -42,7 +42,6 @@ from sglang.multimodal_gen.runtime.models.schedulers.scheduling_sana_wm_self_for
     SanaWMSelfForcingScheduler,
 )
 from .base import (
-    SanaWMDenoisingStage,
     _align_sana_wm_cfg_text_conditions,
     _cat_optional_tensors,
     _first_tensor,
@@ -50,7 +49,12 @@ from .base import (
     log_sana_wm_tensor_stats,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
+from sglang.multimodal_gen.runtime.pipelines_core.stages.causal_denoising import (
+    CausalDMDDenoisingStage,
+)
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
+from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising import DenoisingStage
+from sglang.multimodal_gen.runtime.realtime.causal_state import RealtimeCausalDiTState
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
@@ -171,8 +175,50 @@ def self_forcing_denoise_chunk(
     return updated_cache
 
 
-class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
-    """Autoregressive self-forcing streaming variant of SanaWMDenoisingStage."""
+class SanaWMStreamCacheState(RealtimeCausalDiTState):
+    """Per-session streaming DiT state, framework-pattern (cf. LingBot).
+
+    Reuses the framework counters (``chunk_idx`` / ``current_chunk_start_frame``);
+    the Wan-shaped ``kv_cache`` field stays None — SANA-WM's cache is the
+    heterogeneous per-block 10-slot list (GDN recurrent matrix states + softmax
+    concat windows + conv tails), carried in the fields below."""
+
+    def __init__(self):
+        super().__init__()
+        # kv[chunk][block][slot] — grown per chunk, stale chunks evicted.
+        self.stream_kv_cache: list = []
+        self.chunk_indices: list[int] = [0]
+        # Growing stage-1 latent buffer (cond frame + denoised chunks).
+        self.latents: torch.Tensor | None = None
+        # Per-session flow-Euler scheduler (fresh shift=1.0; persists across ticks).
+        self.scheduler: FlowMatchEulerDiscreteScheduler | None = None
+
+    def dispose(self) -> None:
+        super().dispose()
+        self.stream_kv_cache = []
+        self.chunk_indices = [0]
+        self.latents = None
+        self.scheduler = None
+
+
+class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
+    """Autoregressive self-forcing streaming denoise — SANA-WM's causal-DMD variant.
+
+    Same family as ``LingBotWorldCausalDMDDenoisingStage``: the offline path runs
+    the whole clip in one forward; the realtime path (sessions) denoises ONE chunk
+    per call with per-session state. Differences from the Wan-style base are the
+    cache contract (heterogeneous 10-slot list instead of preallocated
+    ``CausalSelfAttentionKVCache``), the front-loaded chunk grid (chunk 0 carries
+    the remainder), and in-chunk condition-frame pinning instead of KV warm-up —
+    hence the cache-management overrides below.
+    """
+
+    def __init__(self, transformer, scheduler=None) -> None:
+        # Skip CausalDMDDenoisingStage.__init__: it reads Wan-specific arch
+        # fields (num_frames_per_block / sliding_window_num_frames / sink_size)
+        # that SANA-WM defines per-run via the pipeline config instead.
+        DenoisingStage.__init__(self, transformer, scheduler)
+        self.num_transformer_blocks = len(transformer.blocks)
 
     # Chunk schedule + KV cache: delegate to SanaWMSelfForcingScheduler.
     @staticmethod
@@ -203,44 +249,177 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
         )
 
     # ----------------------------------------------------------------- #
-    # Streaming denoising loop
+    # Realtime per-chunk path (sessions) — LingBot-pattern counterpart of the
+    # offline whole-clip loop below. One forward = the tick's planned stage-1
+    # chunk(s); per-session state in SanaWMStreamCacheState.
     # ----------------------------------------------------------------- #
     @torch.no_grad()
-    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+    def _forward_realtime_chunk(self, batch: Req, server_args: ServerArgs) -> Req:
         if batch.latents is None or batch.latents.ndim != 5:
             raise ValueError(
-                "SANA-WM streaming denoising expects 5D latents (B, C, T, H, W)."
+                "SANA-WM realtime denoising expects this tick's pre-noised chunk "
+                "latents (B, C, n, H, W) from the latent-preparation stage."
             )
-
         pcfg = server_args.pipeline_config
         device = get_local_torch_device()
-        target_dtype = PRECISION_TO_TYPE.get(getattr(pcfg, "dit_precision", "bf16"), torch.bfloat16)
+        target_dtype = PRECISION_TO_TYPE.get(
+            getattr(pcfg, "dit_precision", "bf16"), torch.bfloat16
+        )
+        state = batch.session.get_or_create_state(SanaWMStreamCacheState)
+        if batch.block_idx == 0 and state.latents is not None:
+            state.dispose()  # session restart on chunk 0 (mirrors the base stage)
 
-        # .clone() detaches from the loader's InferenceMode tensor so the
-        # per-chunk in-place latent updates below are allowed.
-        latents = batch.latents.to(device=device, dtype=target_dtype).clone()
-        init_latents = latents.clone()
-        B, C, total_frames, H, W = latents.shape
+        sc = self._resolve_stream_conditioning(
+            batch, server_args, device=device, target_dtype=target_dtype
+        )
+        sampler_cfg = sc.sampler_cfg
+        incoming = batch.latents.to(device=device, dtype=target_dtype).clone()
+        plan = list(batch.extra.get("sana_wm_chunk_plan") or [incoming.shape[2]])
+        if sum(plan) != incoming.shape[2]:
+            raise ValueError(
+                f"chunk plan {plan} does not cover the incoming {incoming.shape[2]} frames"
+            )
+        if state.scheduler is None:
+            state.scheduler = FlowMatchEulerDiscreteScheduler(shift=1.0)
 
-        def _iload(_name):
-            return torch.load(f"{_SANAWM_INJECT_DIR}/{_name}.pt", map_location=device)
+        # The realtime DiT is device-resident for the session's lifetime (the
+        # offload round-trip of use_declared_component would dominate tick
+        # latency; the old engine consumed the module as-loaded — RC#1).
+        transformer = self.transformer
+        num_blocks = len(transformer.blocks)
+        _dump_dir = parity_probe.probe_dir(parity_probe.ENV_RT_DUMP)
+        if _dump_dir and state.chunk_idx == 0:  # parity harness
+            parity_probe.dump_tensor(_dump_dir, "cond_embeds", sc.embeds)
+            parity_probe.dump_tensor(_dump_dir, "cond_mask", sc.mask)
+            parity_probe.dump_obj(
+                _dump_dir, "dit_fingerprint", parity_probe.weights_fingerprint(transformer)
+            )
 
-        _dump_dir = parity_probe.probe_dir(parity_probe.ENV_FORK_DUMP)
+        offset = 0
+        for n in plan:
+            chunk_lat = incoming[:, :, offset : offset + n]
+            offset += n
+            chunk_idx = state.chunk_idx
+            # chunk 0's incoming includes the conditioning frame at index 0.
+            start_f = state.chunk_indices[-1] if chunk_idx > 0 else 0
+            end_f = (start_f + n) if chunk_idx > 0 else n
+            state.chunk_indices.append(end_f)
+            state.stream_kv_cache.append(
+                [[None] * _NUM_STREAM_CACHE_SLOTS for _ in range(num_blocks)]
+            )
+            chunk_kv, sink_num = self._accumulate_kv_cache(
+                state.stream_kv_cache, chunk_idx, state.chunk_indices,
+                sampler_cfg.num_cached_blocks, sampler_cfg.sink_token, num_blocks,
+            )
+            # Evict entries outside the accumulate window (sink + last
+            # num_cached_blocks) — unbounded sessions leak concat K/V otherwise.
+            if chunk_idx > 0 and sampler_cfg.num_cached_blocks > 0:
+                start_chunk = max(chunk_idx - sampler_cfg.num_cached_blocks, 0)
+                valid = list(range(start_chunk, chunk_idx))
+                if sampler_cfg.sink_token:
+                    sink_start = max(chunk_idx - sampler_cfg.num_cached_blocks + 1, 0)
+                    if sink_start > 0:
+                        valid = [0] + list(range(sink_start, chunk_idx))
+                self._evict_stale_kv_cache(
+                    state.stream_kv_cache, chunk_idx, valid,
+                    sampler_cfg.num_cached_blocks, num_blocks,
+                )
+            if _dump_dir:  # parity harness
+                parity_probe.dump_obj(
+                    _dump_dir, f"kv_probe_{chunk_idx:03d}",
+                    parity_probe.kv_cache_checksums(chunk_kv, sink_num),
+                )
+                parity_probe.dump_tensor(
+                    _dump_dir, f"cond_camera_{chunk_idx:03d}", sc.camera
+                )
+                parity_probe.dump_tensor(
+                    _dump_dir, f"cond_plucker_{chunk_idx:03d}", sc.plucker
+                )
+            frame_index = (
+                torch.arange(start_f, end_f, device=device, dtype=torch.long)
+                if sink_num > 0
+                else None
+            )
 
-        def _fdump(_name, _t):
-            parity_probe.dump_tensor(_dump_dir, _name, _t)
+            B, C = chunk_lat.shape[0], chunk_lat.shape[1]
+            cond_mask = torch.zeros(
+                B, C, end_f - start_f, *chunk_lat.shape[3:],
+                device=device, dtype=torch.float32,
+            )
+            cond_local = []
+            if chunk_idx == 0:
+                cond_mask[:, :, 0] = 1.0
+                cond_local = [0]
+            init_chunk = chunk_lat.clone()
+            _local = {"lat": chunk_lat}
 
-        if _SANAWM_INJECT_DIR:  # parity harness: run the OFFICIAL's exact stage-1 inputs
-            latents = _iload("z_full_initial").to(device=device, dtype=target_dtype).clone()
-            init_latents = latents.clone()
-            B, C, total_frames, H, W = latents.shape
+            def _get_chunk(_local=_local):
+                return _local["lat"]
 
-        _fdump("init_noise", init_latents)  # parity harness: seeded pre-noise (cond @ frame 0)
+            def _set_chunk(denoised, _local=_local, init_chunk=init_chunk, cond_local=cond_local):
+                lat = denoised.to(target_dtype)
+                for loc in cond_local:
+                    lat[:, :, loc] = init_chunk[:, :, loc]
+                _local["lat"] = lat
 
+            def _on_noise_pred(ts_int, noise_pred, chunk_idx=chunk_idx):
+                if _dump_dir and chunk_idx == 0:  # parity harness
+                    parity_probe.dump_tensor(
+                        _dump_dir, f"noise_pred_c0_t{ts_int}", noise_pred
+                    )
+
+            state.stream_kv_cache[chunk_idx] = self_forcing_denoise_chunk(
+                transformer=transformer,
+                scheduler=state.scheduler,
+                sigmas=sc.explicit_sigmas,
+                get_chunk=_get_chunk,
+                set_chunk=_set_chunk,
+                cond_mask=cond_mask,
+                embeds=sc.embeds,
+                mask=sc.mask,
+                camera_conditions=sc.camera,
+                chunk_plucker=sc.plucker,
+                chunk_kv=chunk_kv,
+                start_f=start_f,
+                end_f=end_f,
+                frame_index=frame_index,
+                do_cfg=sc.do_cfg,
+                cfg_scale=sc.cfg_scale,
+                target_dtype=target_dtype,
+                device=device,
+                on_noise_pred=_on_noise_pred,
+            )
+            chunk_lat = _local["lat"]
+            state.latents = (
+                chunk_lat
+                if state.latents is None
+                else torch.cat([state.latents, chunk_lat], dim=2)
+            )
+            parity_probe.dump_tensor(  # parity harness
+                _dump_dir, f"stage1_{chunk_idx:03d}_{start_f}_{end_f}", chunk_lat
+            )
+            state.chunk_idx += 1
+            state.current_chunk_start_frame = end_f
+
+        # Downstream chain stages (refiner/decode) consume the growing buffer.
+        batch.latents = state.latents
+        return batch
+
+    def _resolve_stream_conditioning(
+        self,
+        batch: Req,
+        server_args: ServerArgs,
+        *,
+        device: torch.device,
+        target_dtype: torch.dtype,
+        iload=None,
+    ):
+        """Resolve sampler config + text/camera conditioning (shared verbatim by
+        the offline loop and the realtime per-chunk path; pure code motion)."""
+        from types import SimpleNamespace
+
+        pcfg = server_args.pipeline_config
         sampler_cfg = SanaWMSelfForcingSamplerConfig.from_pipeline_config(pcfg)
-        num_frame_per_block = sampler_cfg.num_frame_per_block
-        num_cached_blocks = sampler_cfg.num_cached_blocks
-        sink_token = sampler_cfg.sink_token
         explicit_sigmas = SanaWMSelfForcingScheduler.build_per_chunk_sigmas(
             sampler_cfg.denoising_step_list
         )
@@ -275,12 +454,12 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
             )
         embeds_in = torch.cat([neg_embeds, pos_embeds], dim=0) if do_cfg else pos_embeds
         mask_in = _cat_optional_tensors(neg_mask, pos_mask) if do_cfg else pos_mask
-        if _SANAWM_INJECT_DIR and not do_cfg:
-            _cond = _iload("cond").to(device=device, dtype=target_dtype)
+        if _SANAWM_INJECT_DIR and iload is not None and not do_cfg:
+            _cond = iload("cond").to(device=device, dtype=target_dtype)
             while _cond.dim() > embeds_in.dim():
                 _cond = _cond.squeeze(1)
             embeds_in = _cond
-            mask_in = _iload("cond_mask").to(device=device)
+            mask_in = iload("cond_mask").to(device=device)
 
         # --- camera / plücker (FULL length; forward_long windows internally) ---
         extra = batch.extra or {}
@@ -300,12 +479,78 @@ class SanaWMStreamingDenoisingStage(SanaWMDenoisingStage):
             if do_cfg and chunk_plucker is not None
             else chunk_plucker
         )
-        if _SANAWM_INJECT_DIR:
-            cam_in = _iload("raymap").to(device=device, dtype=target_dtype)
-            plk_in = _iload("chunk_plucker").to(device=device, dtype=target_dtype)
+        if _SANAWM_INJECT_DIR and iload is not None:
+            cam_in = iload("raymap").to(device=device, dtype=target_dtype)
+            plk_in = iload("chunk_plucker").to(device=device, dtype=target_dtype)
             if do_cfg:
                 cam_in = torch.cat([cam_in, cam_in], dim=0)
                 plk_in = torch.cat([plk_in, plk_in], dim=0)
+
+        return SimpleNamespace(
+            sampler_cfg=sampler_cfg,
+            explicit_sigmas=explicit_sigmas,
+            cfg_scale=cfg_scale,
+            do_cfg=do_cfg,
+            embeds=embeds_in,
+            mask=mask_in,
+            camera=cam_in,
+            plucker=plk_in,
+        )
+
+    # ----------------------------------------------------------------- #
+    # Streaming denoising loop
+    # ----------------------------------------------------------------- #
+    @torch.no_grad()
+    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        # LingBot-style dispatch: realtime sessions denoise ONE chunk per call
+        # with per-session state; otherwise run the whole clip offline.
+        if batch.session is not None:
+            return self._forward_realtime_chunk(batch, server_args)
+        return self._forward_offline(batch, server_args)
+
+    @torch.no_grad()
+    def _forward_offline(self, batch: Req, server_args: ServerArgs) -> Req:
+        if batch.latents is None or batch.latents.ndim != 5:
+            raise ValueError(
+                "SANA-WM streaming denoising expects 5D latents (B, C, T, H, W)."
+            )
+
+        pcfg = server_args.pipeline_config
+        device = get_local_torch_device()
+        target_dtype = PRECISION_TO_TYPE.get(getattr(pcfg, "dit_precision", "bf16"), torch.bfloat16)
+
+        # .clone() detaches from the loader's InferenceMode tensor so the
+        # per-chunk in-place latent updates below are allowed.
+        latents = batch.latents.to(device=device, dtype=target_dtype).clone()
+        init_latents = latents.clone()
+        B, C, total_frames, H, W = latents.shape
+
+        def _iload(_name):
+            return torch.load(f"{_SANAWM_INJECT_DIR}/{_name}.pt", map_location=device)
+
+        _dump_dir = parity_probe.probe_dir(parity_probe.ENV_FORK_DUMP)
+
+        def _fdump(_name, _t):
+            parity_probe.dump_tensor(_dump_dir, _name, _t)
+
+        if _SANAWM_INJECT_DIR:  # parity harness: run the OFFICIAL's exact stage-1 inputs
+            latents = _iload("z_full_initial").to(device=device, dtype=target_dtype).clone()
+            init_latents = latents.clone()
+            B, C, total_frames, H, W = latents.shape
+
+        _fdump("init_noise", init_latents)  # parity harness: seeded pre-noise (cond @ frame 0)
+
+        sc = self._resolve_stream_conditioning(
+            batch, server_args, device=device, target_dtype=target_dtype, iload=_iload
+        )
+        sampler_cfg = sc.sampler_cfg
+        num_frame_per_block = sampler_cfg.num_frame_per_block
+        num_cached_blocks = sampler_cfg.num_cached_blocks
+        sink_token = sampler_cfg.sink_token
+        explicit_sigmas = sc.explicit_sigmas
+        cfg_scale = sc.cfg_scale
+        do_cfg = sc.do_cfg
+        embeds_in, mask_in, cam_in, plk_in = sc.embeds, sc.mask, sc.camera, sc.plucker
 
         # parity harness: full-length conditioning fed to forward_long (windowed
         # internally per chunk via [start_f:end_f]).
