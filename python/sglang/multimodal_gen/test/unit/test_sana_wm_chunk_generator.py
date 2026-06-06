@@ -142,6 +142,36 @@ def test_chunk_generator_open_ended_seeded_and_evicts(_global_args):
     assert torch.equal(g.latents, g2.latents)
 
 
+def test_chunk_generator_continues_past_noise_horizon(_global_args):
+    """Fixed-horizon discipline (noise buffer + front-loaded segments) for the
+    first chunks, then SEAMLESS continuation: segments exhausted -> uniform
+    chunks; noise buffer exhausted -> seeded fallback draws. No reset."""
+    m = _tiny_model()
+    g = SanaWMChunkGenerator(
+        m, denoising_step_list=(1000, 700, 0), num_frame_per_block=2,
+        cfg_scale=1.0, device=torch.device("cpu"), dtype=torch.float64,
+    )
+    fl = torch.ones(1, MC, 1, 2, 2, dtype=torch.float64)
+    pe = torch.zeros(1, 4, 32, dtype=torch.float64)
+    torch.manual_seed(0)
+    noise = torch.randn(1, MC, 5, 2, 2, dtype=torch.float64)
+    # total 5 latent frames -> front-loaded segments [0, 3, 5] (chunk 0 = cond+2).
+    g.reset(fl, pe, noise_buffer=noise, seed=99, total_latent_frames=5)
+
+    g.step()  # chunk 0 -> 3 frames (front-loaded)
+    g.step()  # chunk 1 -> 5 frames (horizon reached)
+    assert g.latents.shape[2] == 5
+    # Past the horizon: uniform chunks from the seeded fallback generator.
+    g.step(n_frames=2)
+    g.step(n_frames=2)
+    assert g.latents.shape[2] == 9
+    assert g.chunk_indices == [0, 3, 5, 7, 9]
+    assert torch.isfinite(g.latents).all()
+    # Condition frame still pinned; KV chain unbroken (no reset happened).
+    assert torch.allclose(g.latents[:, :, 0], fl[:, :, 0])
+    assert len(g.kv_cache) == 4
+
+
 def test_chunk_generator_reset_clears_state(_global_args):
     m = _tiny_model()
     generator = SanaWMChunkGenerator(
