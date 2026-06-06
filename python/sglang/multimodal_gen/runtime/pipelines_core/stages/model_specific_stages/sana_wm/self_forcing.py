@@ -1,5 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SANA-WM self-forcing flow-Euler chunk scheduler.
+"""SANA-WM self-forcing chunk SAMPLER utilities (not a diffusers scheduler).
+
+Owns the autoregressive chunk grid, the per-block KV-cache accumulation /
+eviction, and the explicit per-chunk sigma list used by streaming
+(self-forcing) SANA-WM generation. The actual stepping scheduler is the
+shared ``FlowMatchEulerDiscreteScheduler`` (``per_token_timesteps`` path).
+
+Why not ``SelfForcingFlowMatchScheduler`` (the LingBot causal-DMD scheduler):
+
+  * SANA-WM's distilled sigma grid is an explicit NON-uniform list
+    ((1000, 960, 889, 727, 0)/1000); its ``set_timesteps`` only expresses
+    ``linspace(sigma_max -> sigma_min)`` + shift.
+  * SANA-WM pins the condition frame at timestep 0 INSIDE chunk 0 (per-frame
+    timesteps within one step); its ``step`` applies a single per-sample
+    sigma. LingBot instead warms the cond frames into the KV cache, so a
+    scalar sigma suffices there.
 
 Owns the autoregressive chunk segmentation and the per-block KV-cache
 accumulation / eviction used by streaming (self-forcing) SANA-WM generation;
@@ -54,7 +69,7 @@ class SanaWMSelfForcingSamplerConfig:
         )
 
 
-class SanaWMSelfForcingScheduler:
+class SanaWMSelfForcingSampler:
     """Self-forcing chunk scheduler: segmentation + per-block KV-cache carry.
 
     Stateless; methods are static (every input is passed explicitly), matching
@@ -154,7 +169,7 @@ class SanaWMSelfForcingScheduler:
                 prev_last[_SLOT_FFN_TCONV],
             ]
 
-        SanaWMSelfForcingScheduler.evict_stale_kv_cache(
+        SanaWMSelfForcingSampler.evict_stale_kv_cache(
             kv_cache, chunk_idx, valid, num_cached_blocks, num_blocks
         )
         return cur, sink_num

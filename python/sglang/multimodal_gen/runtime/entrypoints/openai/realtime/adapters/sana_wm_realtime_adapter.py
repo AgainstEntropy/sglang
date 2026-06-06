@@ -385,8 +385,8 @@ class SanaWMRealtimeAdapter(RealtimeModelAdapter):
             session.request.num_frames if session.request is not None else None
         )
         if req_num_frames is not None:
-            from sglang.multimodal_gen.runtime.models.schedulers.scheduling_sana_wm_self_forcing import (
-                SanaWMSelfForcingScheduler,
+            from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.self_forcing import (
+                SanaWMSelfForcingSampler,
             )
             from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.utils import (
                 snap_num_frames,
@@ -394,7 +394,7 @@ class SanaWMRealtimeAdapter(RealtimeModelAdapter):
 
             snapped = snap_num_frames(int(req_num_frames), stride=temporal_compression)
             latent_t = (snapped - 1) // temporal_compression + 1
-            segments = SanaWMSelfForcingScheduler.create_autoregressive_segments(
+            segments = SanaWMSelfForcingSampler.create_autoregressive_segments(
                 latent_t, chunk_size
             )
             idx = int(chunk.index)

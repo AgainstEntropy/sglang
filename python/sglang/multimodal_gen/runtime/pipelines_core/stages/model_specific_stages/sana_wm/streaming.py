@@ -37,9 +37,9 @@ from sglang.multimodal_gen.runtime.models.dits.sana_wm import (
 from sglang.multimodal_gen.runtime.models.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
 )
-from sglang.multimodal_gen.runtime.models.schedulers.scheduling_sana_wm_self_forcing import (
+from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.self_forcing import (
     SanaWMSelfForcingSamplerConfig,
-    SanaWMSelfForcingScheduler,
+    SanaWMSelfForcingSampler,
 )
 from .base import (
     _align_sana_wm_cfg_text_conditions,
@@ -242,10 +242,10 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
             ),
         ]
 
-    # Chunk schedule + KV cache: delegate to SanaWMSelfForcingScheduler.
+    # Chunk schedule + KV cache: delegate to SanaWMSelfForcingSampler.
     @staticmethod
     def _autoregressive_segments(total_frames: int, num_frame_per_block: int) -> list[int]:
-        return SanaWMSelfForcingScheduler.create_autoregressive_segments(
+        return SanaWMSelfForcingSampler.create_autoregressive_segments(
             total_frames, num_frame_per_block
         )
 
@@ -258,7 +258,7 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
         sink_token: bool,
         num_blocks: int,
     ) -> tuple[list, int]:
-        return SanaWMSelfForcingScheduler.accumulate_kv_cache(
+        return SanaWMSelfForcingSampler.accumulate_kv_cache(
             kv_cache, chunk_idx, chunk_indices, num_cached_blocks, sink_token, num_blocks
         )
 
@@ -266,7 +266,7 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
     def _evict_stale_kv_cache(
         kv_cache: list, chunk_idx: int, valid: list[int], num_cached_blocks: int, num_blocks: int
     ) -> None:
-        SanaWMSelfForcingScheduler.evict_stale_kv_cache(
+        SanaWMSelfForcingSampler.evict_stale_kv_cache(
             kv_cache, chunk_idx, valid, num_cached_blocks, num_blocks
         )
 
@@ -451,7 +451,7 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
 
         pcfg = server_args.pipeline_config
         sampler_cfg = SanaWMSelfForcingSamplerConfig.from_pipeline_config(pcfg)
-        explicit_sigmas = SanaWMSelfForcingScheduler.build_per_chunk_sigmas(
+        explicit_sigmas = SanaWMSelfForcingSampler.build_per_chunk_sigmas(
             sampler_cfg.denoising_step_list
         )
 
