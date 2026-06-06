@@ -12,7 +12,6 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import (
     RealtimeTextEncodingStage,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm import (
-    SanaWMRealtimeStage,
     SanaWMTextEncodingStage,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.refiner import (
@@ -93,6 +92,23 @@ class SanaWMRealtimePipeline(SanaWMTwoStagePipeline):
         )
 
     def create_pipeline_stages(self, server_args: ServerArgs):
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.realtime_chain import (
+            SanaWMCameraCondStage,
+            SanaWMCausalDecodeChainStage,
+            SanaWMChunkedRefinerChainStage,
+            SanaWMCondFrameEncodeStage,
+            SanaWMRealtimeLatentPrepStage,
+        )
+        from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.sana_wm.streaming import (
+            SanaWMStreamingDenoisingStage,
+        )
+
+        refiner_stage = self._build_realtime_refiner_stage(server_args)
+        common = dict(
+            transformer=self.get_module("transformer"),
+            vae=self.get_module("vae"),
+            model_path=self.model_path,
+        )
         self.add_stage(RealtimeInputValidationStage())
         self.add_stage(
             SanaWMRealtimeTextEncodingStage(
@@ -100,14 +116,23 @@ class SanaWMRealtimePipeline(SanaWMTwoStagePipeline):
                 tokenizers=[self.get_module("tokenizer")],
             )
         )
+        self.add_stage(SanaWMCondFrameEncodeStage(**common))
         self.add_stage(
-            SanaWMRealtimeStage(
-                transformer=self.get_module("transformer"),
-                vae=self.get_module("vae"),
-                model_path=self.model_path,
-                refiner_stage=self._build_realtime_refiner_stage(server_args),
+            SanaWMRealtimeLatentPrepStage(
+                use_refiner=refiner_stage is not None, **common
             )
         )
+        self.add_stage(SanaWMCameraCondStage(**common))
+        self.add_stage(
+            SanaWMStreamingDenoisingStage(
+                transformer=self.get_module("transformer"), keep_resident=True
+            )
+        )
+        if refiner_stage is not None:
+            self.add_stage(
+                SanaWMChunkedRefinerChainStage(refiner_stage=refiner_stage, **common)
+            )
+        self.add_stage(SanaWMCausalDecodeChainStage(**common))
 
 
 EntryClass = SanaWMRealtimePipeline

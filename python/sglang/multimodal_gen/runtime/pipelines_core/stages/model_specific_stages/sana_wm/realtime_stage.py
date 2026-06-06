@@ -26,11 +26,6 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import (
     scale_and_shift_latents,
 )
 
-# Incremental stage-1 generator, chunked LTX-2 refiner runner, and causal-VAE chunk decode.
-from . import parity_probe
-from .chunk_generator import (
-    SanaWMChunkGenerator,
-)
 from .base import (
     _SANA_WM_DEFAULT_ROTATION_SPEED_DEG,
     _SANA_WM_DEFAULT_TRANSLATION_SPEED,
@@ -171,86 +166,6 @@ def _motion_param(batch: Req, name: str, default: float) -> float:
     return float(value)
 
 
-class SanaWMStreamingState(BaseRealtimeState):
-    def __init__(self):
-        super().__init__()
-        self.initialized = False
-        # True => no fixed horizon (request without num_frames): uniform chunk
-        # grid + per-chunk seeded noise; batch parity is undefined in this mode.
-        self.open_ended = False
-        self.prompt: str = ""
-        self.image: Image.Image | None = None
-        self.intrinsics_image: Image.Image | None = None
-        self.src_size: tuple[int, int] | None = None
-        self.resized_size: tuple[int, int] | None = None
-        self.crop_offset: tuple[int, int] | None = None
-        self.intrinsics_raw: np.ndarray | None = None
-        self.camera_actions: list[list[str]] = []
-        self.max_camera_actions = 0
-        self.static_c2w: np.ndarray | None = None
-        self.latents: torch.Tensor | None = None
-        # refined_full accumulates sink + refined frames across steps (refiner path).
-        self.refined_full: torch.Tensor | None = None
-        # Incremental stage-1 generator (chunk-by-chunk denoise engine).
-        self.generator: SanaWMChunkGenerator | None = None
-        # This step's camera tensors for generator.step.
-        self.raymap: torch.Tensor | None = None
-        self.chunk_plucker: torch.Tensor | None = None
-        self.stage1_chunks = 0
-        self.stage1_idx = 0
-        self.produced_until = 0
-        self.tick = 0
-        self.use_refiner = False
-        self.refiner_runner: RefinerChunkRunner | None = None
-        self.sink_size = 1
-        self.refiner_block_size = DEFAULT_REFINER_BLOCK_SIZE
-        self.refiner_kv_max_frames = DEFAULT_REFINER_KV_MAX_FRAMES
-        self.n_blocks = 0
-        self.next_ref_idx = 0
-        self.next_dec_idx = 0
-        # Per-conv decoder cache threaded through vae.decode_chunk across chunks.
-        self.conv_cache: dict | None = None
-        # Latent horizon; None => open-ended (no cap).
-        self.latent_t: int | None = None
-        self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
-        self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
-
-    def dispose(self):
-        self.conv_cache = None
-        self.initialized = False
-        self.open_ended = False
-        self.prompt = ""
-        self.image = None
-        self.intrinsics_image = None
-        self.src_size = None
-        self.resized_size = None
-        self.crop_offset = None
-        self.intrinsics_raw = None
-        self.camera_actions = []
-        self.max_camera_actions = 0
-        self.static_c2w = None
-        self.generator = None
-        self.raymap = None
-        self.chunk_plucker = None
-        self.stage1_chunks = 0
-        self.stage1_idx = 0
-        self.produced_until = 0
-        self.tick = 0
-        self.use_refiner = False
-        self.refiner_runner = None
-        self.sink_size = 1
-        self.refiner_block_size = DEFAULT_REFINER_BLOCK_SIZE
-        self.refiner_kv_max_frames = DEFAULT_REFINER_KV_MAX_FRAMES
-        self.n_blocks = 0
-        self.next_ref_idx = 0
-        self.next_dec_idx = 0
-        self.latent_t = None
-        self.translation_speed = _SANA_WM_DEFAULT_TRANSLATION_SPEED
-        self.rotation_speed_deg = _SANA_WM_DEFAULT_ROTATION_SPEED_DEG
-        self.latents = None
-        self.refined_full = None
-
-
 class SanaWMRealtimeStage(PipelineStage):
     def __init__(
         self,
@@ -354,7 +269,7 @@ class SanaWMRealtimeStage(PipelineStage):
     def _prepare_intrinsics(
         self,
         batch: Req,
-        state: SanaWMStreamingState,
+        state,
         *,
         num_frames: int,
         device: torch.device,
@@ -380,7 +295,7 @@ class SanaWMRealtimeStage(PipelineStage):
         return np.broadcast_to(estimated, (num_frames, 4)).copy()
 
     def _append_realtime_camera_actions(
-        self, batch: Req, state: SanaWMStreamingState
+        self, batch: Req, state
     ) -> None:
         actions = _normalize_camera_actions(
             (batch.condition_inputs or {}).get("camera_actions")
@@ -395,7 +310,7 @@ class SanaWMRealtimeStage(PipelineStage):
 
     def _camera_from_state(
         self,
-        state: SanaWMStreamingState,
+        state,
         *,
         num_frames: int,
         translation_speed: float,
@@ -421,111 +336,6 @@ class SanaWMRealtimeStage(PipelineStage):
             translation_speed=translation_speed,
             rotation_speed_deg=rotation_speed_deg,
         )[:num_frames]
-
-    def _update_camera_tensors(
-        self,
-        batch: Req,
-        state: SanaWMStreamingState,
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> None:
-        if state.generator is None:
-            return
-        if state.src_size is None or state.resized_size is None or state.crop_offset is None:
-            raise ValueError("SANA-WM crop metadata is not initialized")
-
-        # Cover the camera through the END of the next stage-1 chunk; sessions
-        # stream past any fixed noise horizon, so the request's num_frames is a
-        # lower bound only (within the horizon max() keeps it EXACTLY at
-        # num_frames — bitwise-identical camera tensors to the parity path).
-        # forward_long windows internally.
-        target_latent = state.generator.latents.shape[2] + int(
-            state.refiner_block_size
-        )
-        needed = (target_latent - 1) * 8 + 1
-        if state.open_ended:
-            # The per-chunk batch carries the SamplingParams default num_frames,
-            # which is meaningless in open-ended mode.
-            num_frames = needed
-        else:
-            num_frames = max(int(batch.num_frames), needed)
-        condition_inputs = batch.condition_inputs or {}
-        if "translation_speed" in condition_inputs:
-            state.translation_speed = float(condition_inputs["translation_speed"])
-        if "rotation_speed_deg" in condition_inputs:
-            state.rotation_speed_deg = float(condition_inputs["rotation_speed_deg"])
-        c2w = self._camera_from_state(
-            state,
-            num_frames=num_frames,
-            translation_speed=state.translation_speed,
-            rotation_speed_deg=state.rotation_speed_deg,
-        )
-        intrinsics_raw = self._prepare_intrinsics(
-            batch,
-            state,
-            num_frames=num_frames,
-            device=device,
-        )
-        state.intrinsics_raw = intrinsics_raw
-        # Build raymap + chunk_plucker through the SAME helpers (and on the same
-        # device) as the batch path's _build_camera_conditioning, instead of the
-        # equivalent-but-separate utils.prepare_camera_conditions (since removed):
-        # the two implementations agreed only to ~1-2 bf16 ulps on some frames, and
-        # that seed amplifies to %-level stage-1 drift through the bf16 block stack
-        # across chunks (measured: plucker_emb 1.7e-7 -> chunk>=2 1.3-4% relRMS).
-        # The intrinsics crop transform goes through the batch static helper too
-        # (the numpy twin utils.transform_intrinsics_for_crop is gone).
-        vae_time_stride = 8
-        latent_h = SANA_WM_HEIGHT // 32
-        latent_w = SANA_WM_WIDTH // 32
-        latent_t = (num_frames - 1) // vae_time_stride + 1
-        camera_to_world = (
-            torch.from_numpy(np.asarray(c2w, dtype=np.float32))
-            .unsqueeze(0)
-            .to(device=device, dtype=torch.float32)
-        )
-        intrinsics_vec4 = (
-            torch.from_numpy(np.asarray(intrinsics_raw, dtype=np.float32))
-            .unsqueeze(0)
-            .to(device=device, dtype=torch.float32)
-        )
-        intrinsics_vec4 = (
-            SanaWMBeforeDenoisingStage._transform_intrinsics_for_condition_image(
-                intrinsics_vec4,
-                {
-                    "source_size": state.src_size,
-                    "resized_size": state.resized_size,
-                    "crop_offset": state.crop_offset,
-                },
-            )
-        )
-        rel_poses = SanaWMBeforeDenoisingStage._relative_camera_poses(camera_to_world)
-        intrinsics_latent = SanaWMBeforeDenoisingStage._scale_intrinsics_to_latent(
-            intrinsics_vec4,
-            pixel_h=SANA_WM_HEIGHT,
-            pixel_w=SANA_WM_WIDTH,
-            latent_h=latent_h,
-            latent_w=latent_w,
-        )
-        original_camera = SanaWMBeforeDenoisingStage._flatten_camera_conditions(
-            rel_poses, intrinsics_latent
-        )
-        raymap = SanaWMBeforeDenoisingStage._latent_frame_camera_conditions(
-            original_camera,
-            num_frames=num_frames,
-            latent_frames=latent_t,
-            vae_temporal_stride=vae_time_stride,
-        ).to(device=device, dtype=dtype)
-        chunk_plucker = compute_chunk_plucker(
-            original_camera,
-            HW=(latent_t, latent_h, latent_w),
-            vae_temporal_stride=vae_time_stride,
-            patch_size=(1, 1, 1),
-        ).to(device=device, dtype=dtype)
-        # Carried into generator.step as the next chunk's camera conditioning.
-        state.raymap = raymap
-        state.chunk_plucker = chunk_plucker
 
     @torch.inference_mode()
     def _encode_first_frame(
@@ -606,7 +416,7 @@ class SanaWMRealtimeStage(PipelineStage):
             self.first_frame_latent_cache = (cache_key, first_latent.detach())
         return first_latent
 
-    def _ensure_conv_cache(self, state: SanaWMStreamingState) -> dict:
+    def _ensure_conv_cache(self, state) -> dict:
         """Lazily allocate the per-conv decoder cache threaded across chunks."""
         if state.conv_cache is None:
             state.conv_cache = self.vae.reset_decoder_cache()
@@ -624,7 +434,7 @@ class SanaWMRealtimeStage(PipelineStage):
     def _decode_chunk(
         self,
         latents: torch.Tensor,
-        state: SanaWMStreamingState,
+        state,
         server_args: ServerArgs,
         *,
         vae_dtype: torch.dtype,
@@ -642,7 +452,7 @@ class SanaWMRealtimeStage(PipelineStage):
 
     def _build_refiner_runner(
         self,
-        state: SanaWMStreamingState,
+        state,
         batch: Req,
         *,
         device: torch.device,
@@ -698,395 +508,3 @@ class SanaWMRealtimeStage(PipelineStage):
         num_frames = getattr(batch, "num_frames", None)
         return num_frames is None or int(num_frames) <= 0
 
-    def _initialize_state(
-        self,
-        batch: Req,
-        state: SanaWMStreamingState,
-        *,
-        transformer: torch.nn.Module,
-        device: torch.device,
-        weight_dtype: torch.dtype,
-        vae_dtype: torch.dtype,
-    ) -> None:
-        image, intrinsics_image, src_size, resized_size, crop_offset = self._prepare_image(batch)
-        state.image = image
-        state.intrinsics_image = intrinsics_image
-        state.src_size = src_size
-        state.resized_size = resized_size
-        state.crop_offset = crop_offset
-        state.intrinsics_raw = None
-        state.prompt = str(batch.prompt)
-
-        state.open_ended = self._is_open_ended(batch)
-        if state.open_ended:
-            # Open-ended session (request without num_frames): no fixed horizon.
-            # Uniform chunk grid + per-chunk seeded noise (engine fallback);
-            # parity with the batch pipeline is only defined for fixed horizons.
-            num_frames = None
-        else:
-            num_frames = snap_num_frames(int(batch.num_frames), stride=8)
-            batch.num_frames = num_frames
-        # Unlimited action history: sessions stream past any noise horizon, so
-        # actions beyond num_frames must not be trimmed.
-        state.max_camera_actions = 0
-        self._append_realtime_camera_actions(batch, state)
-        first_latent = self._get_first_frame_latent(
-            batch,
-            image,
-            device=device,
-            vae_dtype=vae_dtype,
-            latent_dtype=weight_dtype,
-        )
-        latent_t = None if num_frames is None else (num_frames - 1) // 8 + 1
-        if latent_t is None:
-            # Open-ended: no full-horizon pre-noise; the engine's seeded fallback
-            # generator draws each chunk's noise on demand.
-            latents = None
-        else:
-            generator = batch.generator[0] if isinstance(batch.generator, list) else batch.generator
-            if generator is None:
-                generator = torch.Generator(device=device).manual_seed(int(batch.seed))
-            latents = torch.randn(
-                1,
-                first_latent.shape[1],
-                latent_t,
-                first_latent.shape[-2],
-                first_latent.shape[-1],
-                device=device,
-                dtype=weight_dtype,
-                generator=generator,
-            )
-            latents[:, :, :1] = first_latent
-            parity_probe.dump_tensor(  # parity harness (no-op in prod)
-                parity_probe.probe_dir(parity_probe.ENV_RT_DUMP), "noise_buffer", latents
-            )
-
-        cond = batch.prompt_embeds[0].to(device=device, dtype=weight_dtype)
-        cond_mask = (
-            batch.prompt_attention_mask[0]
-            if isinstance(batch.prompt_attention_mask, list)
-            else batch.prompt_attention_mask
-        )
-        if cond_mask is None:
-            cond_mask = torch.ones(cond.shape[0], cond.shape[2], device=device)
-        cond_mask = cond_mask.to(device=device)
-        neg = None
-        if batch.do_classifier_free_guidance and batch.negative_prompt_embeds:
-            neg = batch.negative_prompt_embeds[0].to(device=device, dtype=weight_dtype)
-            if neg.shape[0] == 0:
-                neg = None
-        if neg is None:
-            neg = torch.zeros_like(cond)
-        neg_mask = None
-        if batch.do_classifier_free_guidance:
-            if batch.negative_attention_mask:
-                neg_mask = batch.negative_attention_mask[0].to(device=device)
-                if neg_mask.shape[0] == 0:
-                    neg_mask = None
-            if neg_mask is None:
-                neg_mask = torch.ones_like(cond_mask)
-
-        state.translation_speed = _motion_param(
-            batch,
-            "translation_speed",
-            _SANA_WM_DEFAULT_TRANSLATION_SPEED,
-        )
-        state.rotation_speed_deg = _motion_param(
-            batch,
-            "rotation_speed_deg",
-            _SANA_WM_DEFAULT_ROTATION_SPEED_DEG,
-        )
-        state.static_c2w = self._prepare_static_camera(
-            batch,
-            # Open-ended: seed the static camera with the first chunk's window;
-            # _camera_from_state pads by holding the last pose as the session grows.
-            num_frames=(
-                num_frames
-                if num_frames is not None
-                else int(batch.extra.get("sana_wm_num_frame_per_block", 3)) * 8 + 1
-            ),
-            translation_speed=state.translation_speed,
-            rotation_speed_deg=state.rotation_speed_deg,
-        )
-
-        num_frame_per_block = int(batch.extra.get("sana_wm_num_frame_per_block", 3))
-        state.sink_size = int(batch.extra.get("sana_wm_sink_size", 1))
-        state.refiner_block_size = num_frame_per_block
-        state.refiner_kv_max_frames = DEFAULT_REFINER_KV_MAX_FRAMES
-
-        # Incremental stage-1 generator.
-        generator = SanaWMChunkGenerator(
-            transformer,
-            denoising_step_list=_as_int_tuple(
-                batch.extra.get("sana_wm_denoising_step_list"),
-                (1000, 960, 889, 727, 0),
-            ),
-            num_frame_per_block=num_frame_per_block,
-            num_cached_blocks=int(batch.extra.get("sana_wm_num_cached_blocks", 2)),
-            sink_token=state.sink_size > 0,
-            cfg_scale=float(batch.guidance_scale),
-            device=device,
-            dtype=weight_dtype,
-            vae=self.vae,
-        )
-        generator.reset(
-            first_latent,
-            cond,
-            neg_embeds=neg if batch.do_classifier_free_guidance else None,
-            pos_mask=cond_mask,
-            neg_mask=neg_mask,
-            # Seeded full pre-noise (frame 0 = condition slot) sliced per chunk,
-            # so streaming output is reproducible (matches the offline draw).
-            noise_buffer=latents,
-            seed=(None if batch.seed is None else int(
-                batch.seed[0] if isinstance(batch.seed, list) else batch.seed
-            )),
-            # Front-loaded autoregressive segmentation (chunk 0 carries the
-            # remainder) so the chunk boundaries / KV / camera windowing align
-            # instead of using uniform blocks.
-            total_latent_frames=latent_t,
-        )
-        state.generator = generator
-        self._update_camera_tensors(batch, state, device=device, dtype=weight_dtype)
-
-        # Stage-1 grows generator.latents chunk-by-chunk; the cap is latent_t.
-        # Number of stage-1 chunks after the first (which carries the cond frame):
-        # chunk 0 -> 1 + nfpb frames, each later chunk -> nfpb frames.
-        state.latents = generator.latents
-        state.latent_t = latent_t
-        if latent_t is None:
-            state.stage1_chunks = None
-            state.n_blocks = None
-        else:
-            state.stage1_chunks = max(
-                0, math.ceil((latent_t - 1) / num_frame_per_block)
-            )
-            active_frames = latent_t - state.sink_size
-            if active_frames <= 0:
-                raise ValueError(
-                    f"SANA-WM active latent frames must be positive, got {active_frames}"
-                )
-            state.n_blocks = math.ceil(active_frames / state.refiner_block_size)
-
-        if self.refiner_stage is not None:
-            state.refiner_runner = self._build_refiner_runner(
-                state,
-                batch,
-                device=device,
-                spatial_shape=(int(first_latent.shape[3]), int(first_latent.shape[4])),
-                seed=int(batch.extra.get("sana_wm_refiner_seed", batch.seed)),
-                fps=float(batch.fps),
-            )
-            # refined buffer seeds the sink frame(s) (left unrefined).
-            state.refined_full = first_latent.detach().clone()
-            state.use_refiner = True
-            logger.info(
-                "SANA-WM realtime uses Stage-1 plus LTX-2 refiner streaming."
-            )
-        else:
-            state.use_refiner = False
-            logger.info("SANA-WM realtime uses Stage-1 only (no refiner stage).")
-
-        state.conv_cache = self.vae.reset_decoder_cache()
-        state.initialized = True
-        logger.info(
-            "SANA-WM realtime initialized: latent_t=%s stage1_chunks=%s "
-            "refiner=%s decode_blocks=%s",
-            latent_t,
-            state.stage1_chunks,
-            state.use_refiner,
-            state.n_blocks,
-        )
-
-    def _advance_stage1(
-        self,
-        state: SanaWMStreamingState,
-    ) -> tuple[int, int] | None:
-        """Generate ONE stage-1 chunk via OUR incremental generator.
-
-        Returns ``(start_f, end_f)`` of the freshly produced latent frames in
-        ``generator.latents`` (which grows in place). There is no horizon cut:
-        past a fixed noise horizon the engine continues seamlessly (uniform
-        chunks + seeded fallback noise) instead of rolling the session over.
-        """
-        generator = state.generator
-        if generator is None:
-            return None
-        start_f = generator.latents.shape[2]
-        generator.step(
-            camera_conditions=state.raymap,
-            chunk_plucker=state.chunk_plucker,
-            n_frames=state.refiner_block_size,
-            decode=False,
-        )
-        end_f = generator.latents.shape[2]
-        state.latents = generator.latents
-        state.produced_until = end_f
-        state.stage1_idx += 1
-        return int(start_f), int(end_f)
-
-    def _run_stage1_only_tick(
-        self,
-        state: SanaWMStreamingState,
-        server_args: ServerArgs,
-        *,
-        vae_dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        advanced = self._advance_stage1(state)
-        state.tick += 1
-        if advanced is None or state.generator is None:
-            return None
-        _, end_f = advanced
-        src = state.generator.latents
-        seg = src[:, :, state.next_dec_idx : end_f]
-        frames = self._decode_chunk(seg, state, server_args, vae_dtype=vae_dtype)
-        state.next_dec_idx = end_f
-        return frames
-
-    def _run_refiner_tick(
-        self,
-        state: SanaWMStreamingState,
-        server_args: ServerArgs,
-        *,
-        vae_dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if state.generator is None or state.refined_full is None:
-            return None
-        if state.refiner_runner is None:
-            raise RuntimeError("SANA-WM refiner runner is not initialized")
-
-        advanced = self._advance_stage1(state)
-        state.tick += 1
-        if advanced is None:
-            return None
-        _, end_f = advanced
-
-        # Refine on the UNIFORM block grid (sink + i*block_size), exactly like the
-        # batch SanaWMStreamingRefinerStage and the official streaming reference —
-        # NOT on the (front-loaded) stage-1 chunk grid. Refining per stage-1 chunk
-        # made block 0 span 4 frames ([1,5) instead of [1,4)), shifting every block
-        # boundary, the refiner KV history, and the per-block noise draws — the
-        # refined latents diverged from batch even with bitwise-identical stage-1.
-        # Frames past the last complete block stay buffered in generator.latents
-        # until the next chunk supplies the rest of their block.
-        block_size = int(state.refiner_block_size)
-        frontier = state.refined_full.shape[2]
-        while True:
-            block_start = frontier
-            # Only COMPLETE blocks are refined; a partial tail waits for the
-            # next stage-1 chunk (the session streams past any noise horizon
-            # instead of cutting a short block + rolling over). Consequence:
-            # when (latent_t - sink) % block_size != 0, the frames of the old
-            # "short tail" are refined as part of a later full block and differ
-            # numerically from the retired tail-short refine — align num_frames
-            # to the block grid for full <=N bitwise parity with batch.
-            block_end = block_start + block_size
-            if block_end > end_f:
-                break
-            sink_seed = (
-                state.generator.latents[:, :, : state.sink_size]
-                if block_start == state.sink_size
-                else None
-            )
-            refined = state.refiner_runner.refine_block(
-                block_idx=state.next_ref_idx,
-                clean_block=state.generator.latents[
-                    :, :, block_start:block_end
-                ].contiguous(),
-                block_start=block_start,
-                block_end=block_end,
-                sink_seed_frames=sink_seed,
-            )
-            state.refined_full = torch.cat(
-                [state.refined_full, refined.to(state.refined_full.dtype)], dim=2
-            )
-            state.next_ref_idx += 1
-            frontier = block_end
-
-        # Decode the newly refined region (the official streaming reference also
-        # decodes on the refiner-block grid: decode_chunks == refiner_blocks).
-        if frontier <= state.next_dec_idx:
-            return None
-        src = state.refined_full
-        seg = src[:, :, state.next_dec_idx : frontier]
-        frames = self._decode_chunk(seg, state, server_args, vae_dtype=vae_dtype)
-        state.next_dec_idx = frontier
-        return frames
-
-    @torch.inference_mode()
-    def forward(self, batch: Req, server_args: ServerArgs) -> OutputBatch:
-        if batch.session is None:
-            raise ValueError("SANA-WM realtime pipeline requires a realtime session")
-
-        state = batch.session.get_or_create_state(SanaWMStreamingState)
-        assert isinstance(state, SanaWMStreamingState)
-
-        device = get_local_torch_device()
-        weight_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.dit_precision]
-        vae_dtype = PRECISION_TO_TYPE[server_args.pipeline_config.vae_precision]
-        # Device move WITHOUT a blanket dtype cast: Module.to(dtype=...) also casts
-        # the DiT's complex RoPE buffers (WanRotaryPosEmbed._freqs, complex) to the
-        # real weight dtype, silently DISCARDING the imaginary part (torch warns
-        # "Casting complex values to real discards the imaginary part") and
-        # corrupting every RoPE rotation. This was the realtime<->batch stage-1
-        # divergence root cause: bitwise-identical inputs + identical weights but
-        # ~40% relRMS on the very first forward. The loader already produces
-        # dit_precision weights, exactly as the batch streaming path consumes them
-        # (use_declared_component moves the module without re-casting).
-        transformer = self.transformer.to(device=device).eval()
-        self.vae = self.vae.to(device=device, dtype=vae_dtype).eval()
-        # Same LTX-2 tiling/framewise knobs the batch path applies before every
-        # VAE use (encode + decode), so the cond-frame encode matches bitwise.
-        configure_sana_wm_ltx2_vae_for_long_video(self.vae, server_args.pipeline_config)
-        # Stashed for _encode_first_frame's shared scaling-factor resolution
-        # (forward() always runs before the session-init encode).
-        self._pipeline_config = server_args.pipeline_config
-        batch.enable_sequence_shard = int(server_args.sp_degree or 1) > 1
-
-        with set_forward_context(
-            current_timestep=batch.block_idx,
-            attn_metadata=None,
-            forward_batch=batch,
-        ):
-            if batch.block_idx == 0 or not state.initialized:
-                state.dispose()
-                self._initialize_state(
-                    batch,
-                    state,
-                    transformer=transformer,
-                    device=device,
-                    weight_dtype=weight_dtype,
-                    vae_dtype=vae_dtype,
-                )
-            else:
-                self._append_realtime_camera_actions(batch, state)
-                self._update_camera_tensors(
-                    batch,
-                    state,
-                    device=device,
-                    dtype=weight_dtype,
-                )
-
-            if state.use_refiner:
-                frames = self._run_refiner_tick(state, server_args, vae_dtype=vae_dtype)
-            else:
-                frames = self._run_stage1_only_tick(state, server_args, vae_dtype=vae_dtype)
-
-            if frames is None and state.use_refiner and state.generator is not None:
-                # Boundary buffering tick: the refiner block grid is offset from
-                # the stage-1 chunk grid — this happens exactly once when the
-                # session crosses a noise horizon whose (latent_t - sink) is not
-                # a multiple of block_size (the old code cut a short tail block
-                # here and then horizon-ROLLED-OVER with a full cache reset; the
-                # session now just keeps streaming). Advance one more stage-1
-                # chunk so every tick emits frames — drivers and the serving
-                # loop treat a 0-frame chunk as end-of-stream. One retry always
-                # suffices: stage-1 chunks and refiner blocks share block_size.
-                self._update_camera_tensors(
-                    batch, state, device=device, dtype=weight_dtype
-                )
-                frames = self._run_refiner_tick(state, server_args, vae_dtype=vae_dtype)
-
-            if frames is None:
-                return self._empty_output(batch)
-            return OutputBatch(output=frames.to(torch.float32), metrics=batch.metrics)

@@ -58,7 +58,7 @@ class SanaWMSelfForcingScheduler:
     """Self-forcing chunk scheduler: segmentation + per-block KV-cache carry.
 
     Stateless; methods are static (every input is passed explicitly), matching
-    how ``SanaWMStreamingDenoisingStage`` and ``SanaWMChunkGenerator`` call
+    how the offline and realtime paths of ``SanaWMStreamingDenoisingStage`` call
     them. A ``config`` may be attached for callers that prefer the instance form.
     """
 

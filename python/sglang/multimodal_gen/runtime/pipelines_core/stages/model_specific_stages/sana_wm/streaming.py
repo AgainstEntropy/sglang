@@ -93,7 +93,7 @@ def self_forcing_denoise_chunk(
     """Self-forcing denoise of ONE chunk + the clean t=0 KV pass.
 
     SINGLE implementation of the parity-locked per-chunk math, shared by the
-    batch SanaWMStreamingDenoisingStage and SanaWMChunkGenerator.step (it used
+    offline and realtime paths of SanaWMStreamingDenoisingStage (it used
     to be copy-pasted — the same drift failure mode as the four parity bugs).
 
     ``get_chunk``/``set_chunk`` are caller closures so each path keeps its
@@ -213,12 +213,34 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
     hence the cache-management overrides below.
     """
 
-    def __init__(self, transformer, scheduler=None) -> None:
+    def __init__(self, transformer, scheduler=None, *, keep_resident: bool = False) -> None:
         # Skip CausalDMDDenoisingStage.__init__: it reads Wan-specific arch
         # fields (num_frames_per_block / sliding_window_num_frames / sink_size)
         # that SANA-WM defines per-run via the pipeline config instead.
         DenoisingStage.__init__(self, transformer, scheduler)
         self.num_transformer_blocks = len(transformer.blocks)
+        # Realtime pipelines keep the DiT device-resident for the session's
+        # lifetime (the per-tick offload round-trip would dominate latency);
+        # the offline pipeline keeps the default offload behavior.
+        self._keep_resident = bool(keep_resident)
+
+    def component_uses(self, server_args: ServerArgs, stage_name: str | None = None):
+        if not self._keep_resident:
+            return super().component_uses(server_args, stage_name)
+        from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
+            ComponentUse,
+        )
+
+        stage_name = self._component_stage_name(stage_name)
+        return [
+            ComponentUse(
+                stage_name,
+                "transformer",
+                target_dtype=PRECISION_TO_TYPE[server_args.pipeline_config.dit_precision],
+                memory_intensive=True,
+                keep_ready_after_warmup=True,
+            ),
+        ]
 
     # Chunk schedule + KV cache: delegate to SanaWMSelfForcingScheduler.
     @staticmethod
@@ -282,10 +304,11 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
         if state.scheduler is None:
             state.scheduler = FlowMatchEulerDiscreteScheduler(shift=1.0)
 
-        # The realtime DiT is device-resident for the session's lifetime (the
-        # offload round-trip of use_declared_component would dominate tick
-        # latency; the old engine consumed the module as-loaded — RC#1).
-        transformer = self.transformer
+        # Device-only move, NO dtype cast: Module.to(dtype=...) would cast the
+        # DiT's complex RoPE buffers to real, discarding the imaginary part
+        # (parity root cause #1). No use_declared_component round-trip either —
+        # the DiT stays device-resident for the session's lifetime.
+        transformer = self.transformer.to(device=device).eval()
         num_blocks = len(transformer.blocks)
         _dump_dir = parity_probe.probe_dir(parity_probe.ENV_RT_DUMP)
         if _dump_dir and state.chunk_idx == 0:  # parity harness
@@ -368,27 +391,35 @@ class SanaWMStreamingDenoisingStage(CausalDMDDenoisingStage):
                         _dump_dir, f"noise_pred_c0_t{ts_int}", noise_pred
                     )
 
-            state.stream_kv_cache[chunk_idx] = self_forcing_denoise_chunk(
-                transformer=transformer,
-                scheduler=state.scheduler,
-                sigmas=sc.explicit_sigmas,
-                get_chunk=_get_chunk,
-                set_chunk=_set_chunk,
-                cond_mask=cond_mask,
-                embeds=sc.embeds,
-                mask=sc.mask,
-                camera_conditions=sc.camera,
-                chunk_plucker=sc.plucker,
-                chunk_kv=chunk_kv,
-                start_f=start_f,
-                end_f=end_f,
-                frame_index=frame_index,
-                do_cfg=sc.do_cfg,
-                cfg_scale=sc.cfg_scale,
-                target_dtype=target_dtype,
-                device=device,
-                on_noise_pred=_on_noise_pred,
-            )
+            # Same forward context the mega-stage held across the tick (the
+            # per-chunk denoise core relies on an ambient context here; the
+            # offline path supplies per-step contexts instead).
+            with set_forward_context(
+                current_timestep=batch.block_idx,
+                attn_metadata=None,
+                forward_batch=batch,
+            ):
+                state.stream_kv_cache[chunk_idx] = self_forcing_denoise_chunk(
+                    transformer=transformer,
+                    scheduler=state.scheduler,
+                    sigmas=sc.explicit_sigmas,
+                    get_chunk=_get_chunk,
+                    set_chunk=_set_chunk,
+                    cond_mask=cond_mask,
+                    embeds=sc.embeds,
+                    mask=sc.mask,
+                    camera_conditions=sc.camera,
+                    chunk_plucker=sc.plucker,
+                    chunk_kv=chunk_kv,
+                    start_f=start_f,
+                    end_f=end_f,
+                    frame_index=frame_index,
+                    do_cfg=sc.do_cfg,
+                    cfg_scale=sc.cfg_scale,
+                    target_dtype=target_dtype,
+                    device=device,
+                    on_noise_pred=_on_noise_pred,
+                )
             chunk_lat = _local["lat"]
             state.latents = (
                 chunk_lat
