@@ -33,9 +33,11 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
 from . import parity_probe
-from .realtime_stage import (
+from .base import (
     _SANA_WM_DEFAULT_ROTATION_SPEED_DEG,
     _SANA_WM_DEFAULT_TRANSLATION_SPEED,
+)
+from .realtime_stage import (
     DEFAULT_REFINER_BLOCK_SIZE,
     DEFAULT_REFINER_KV_MAX_FRAMES,
     SanaWMRealtimeStage,
@@ -372,12 +374,12 @@ class SanaWMCameraCondStage(SanaWMRealtimeStage):
         ops; returns instead of writing legacy state). Coverage runs through the
         END of the planned chunks; within a fixed horizon ``max()`` keeps it
         EXACTLY at num_frames — bitwise-identical camera tensors."""
-        from .realtime_stage import (
-            SANA_WM_HEIGHT,
-            SANA_WM_WIDTH,
-            SanaWMBeforeDenoisingStage,
+        from sglang.multimodal_gen.runtime.models.dits.sana_wm_components import (
             compute_chunk_plucker,
         )
+
+        from .base import SanaWMBeforeDenoisingStage
+        from .realtime_stage import SANA_WM_HEIGHT, SANA_WM_WIDTH
 
         if inputs.src_size is None or inputs.resized_size is None or inputs.crop_offset is None:
             raise ValueError("SANA-WM crop metadata is not initialized")

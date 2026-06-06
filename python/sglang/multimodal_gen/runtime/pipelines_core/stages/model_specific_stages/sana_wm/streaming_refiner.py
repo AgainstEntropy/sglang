@@ -30,7 +30,6 @@ from .refiner import (
     STAGE_2_DISTILLED_SIGMA_VALUES,
     SanaWMLTX2RefinerStage,
     _as_additive_attention_mask,
-    _refiner_config_value,
     _unwrap_diffusers_ltx2_refiner,
     log_sana_wm_tensor_stats,
     sana_wm_skip_refiner_enabled,

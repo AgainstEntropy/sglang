@@ -26,13 +26,6 @@ from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.models.dits.sana_wm import (
     _NUM_STREAM_CACHE_SLOTS,
-    _SLOT_CAM_K,
-    _SLOT_CAM_V,
-    _SLOT_FFN_TCONV,
-    _SLOT_K,
-    _SLOT_SHORTCONV,
-    _SLOT_TYPE_FLAG,
-    _SLOT_V,
 )
 from sglang.multimodal_gen.runtime.models.schedulers.scheduling_flow_match_euler_discrete import (
     FlowMatchEulerDiscreteScheduler,
@@ -55,7 +48,6 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.causal_denoising import
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
 from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising import DenoisingStage
 from sglang.multimodal_gen.runtime.realtime.causal_state import RealtimeCausalDiTState
-from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
