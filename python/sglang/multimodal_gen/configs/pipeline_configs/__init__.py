@@ -35,6 +35,9 @@ from sglang.multimodal_gen.configs.pipeline_configs.ideogram import (
 from sglang.multimodal_gen.configs.pipeline_configs.lingbot_video_moe import (
     LingBotVideoMoEPipelineConfig,
 )
+from sglang.multimodal_gen.configs.pipeline_configs.lingbot_vla_v2 import (
+    LingbotVlaV2PipelineConfig,
+)
 from sglang.multimodal_gen.configs.pipeline_configs.lingbot_world import (
     LingBotWorldCausalDMDConfig,
     LingBotWorldV2CausalDMDConfig,
@@ -85,6 +88,7 @@ __all__ = [
     "SlidingTileAttnConfig",
     "MOVAPipelineConfig",
     "Pi05PipelineConfig",
+    "LingbotVlaV2PipelineConfig",
     "StableDiffusion3PipelineConfig",
     "WanT2V480PConfig",
     "WanI2V480PConfig",

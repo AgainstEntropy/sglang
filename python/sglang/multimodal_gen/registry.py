@@ -73,6 +73,9 @@ from sglang.multimodal_gen.configs.pipeline_configs.krea2 import Krea2PipelineCo
 from sglang.multimodal_gen.configs.pipeline_configs.lingbot_video_moe import (
     LingBotVideoMoEPipelineConfig,
 )
+from sglang.multimodal_gen.configs.pipeline_configs.lingbot_vla_v2 import (
+    LingbotVlaV2PipelineConfig,
+)
 from sglang.multimodal_gen.configs.pipeline_configs.longcat_image import (
     LongCatImageEditPipelineConfig,
     LongCatImagePipelineConfig,
@@ -146,6 +149,9 @@ from sglang.multimodal_gen.configs.sample.krea2 import (
 )
 from sglang.multimodal_gen.configs.sample.lingbot_video_moe import (
     LingBotVideoMoESamplingParams,
+)
+from sglang.multimodal_gen.configs.sample.lingbot_vla_v2 import (
+    LingbotVlaV2SamplingParams,
 )
 from sglang.multimodal_gen.configs.sample.lingbot_world import (
     LingBotWorldSamplingParams,
@@ -337,6 +343,9 @@ KNOWN_NON_DIFFUSERS_DIFFUSION_MODEL_PATTERNS: Dict[str, str] = {
     "lerobot/pi05": "Pi05Pipeline",
     "pi05": "Pi05Pipeline",
     "pi0.5": "Pi05Pipeline",
+    "robbyant/lingbot-vla-v2": "LingbotVlaV2Pipeline",
+    "lingbot-vla": "LingbotVlaV2Pipeline",
+    "lingbot_vla": "LingbotVlaV2Pipeline",
     "hunyuan3d": "Hunyuan3D2Pipeline",
     "flux.2-dev-nvfp4": "Flux2NvfpPipeline",
     "fal/ideogram-v4-fast": "Ideogram4FastPipeline",
@@ -769,6 +778,19 @@ def _register_configs():
         model_detectors=[
             lambda hf_id: "pi05" in hf_id.lower(),
             lambda hf_id: "pi0.5" in hf_id.lower(),
+        ],
+    )
+
+    # LingBot-VLA-V2 action policies (Qwen3-VL + MoE action expert).
+    register_configs(
+        sampling_param_cls=LingbotVlaV2SamplingParams,
+        pipeline_config_cls=LingbotVlaV2PipelineConfig,
+        hf_model_paths=[
+            "robbyant/lingbot-vla-v2-6b",
+        ],
+        model_detectors=[
+            lambda hf_id: "lingbot-vla" in hf_id.lower(),
+            lambda hf_id: "lingbot_vla" in hf_id.lower(),
         ],
     )
 
