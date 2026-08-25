@@ -1559,6 +1559,13 @@
                     "pages": [
                       "cookbook/vla/OpenPI/Pi0.5"
                     ]
+                  },
+                  {
+                    "group": "LingBot",
+                    "tag": "NEW",
+                    "pages": [
+                      "cookbook/vla/LingBot/LingBot-VLA-V2"
+                    ]
                   }
                 ]
               },

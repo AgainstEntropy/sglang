@@ -1,0 +1,98 @@
+---
+title: LingBot-VLA-V2
+metatags:
+    description: "Deploy LingBot-VLA-V2 diffusion Vision-Language-Action policies with SGLang's native multimodal_gen runtime."
+tag: dVLA
+---
+
+<div className="not-prose" style={{display: "flex", flexWrap: "wrap", gap: "6px", margin: "8px 0 30px"}}>
+  <span style={{display: "inline-block", padding: "4px 9px", borderRadius: "999px", background: "#eef2ff", color: "#3730a3", fontSize: "12px", fontWeight: 750}}>dVLA</span>
+  <span style={{display: "inline-block", padding: "4px 9px", borderRadius: "999px", background: "#eef2ff", color: "#3730a3", fontSize: "12px", fontWeight: 750}}>Qwen3-VL backbone</span>
+  <span style={{display: "inline-block", padding: "4px 9px", borderRadius: "999px", background: "#eef2ff", color: "#3730a3", fontSize: "12px", fontWeight: 750}}>MoE action expert</span>
+  <span style={{display: "inline-block", padding: "4px 9px", borderRadius: "999px", background: "#eef2ff", color: "#3730a3", fontSize: "12px", fontWeight: 750}}>flow matching action</span>
+</div>
+
+## 1. Model Introduction
+
+LingBot-VLA-V2 is a diffusion Vision-Language-Action (dVLA) policy from Robbyant. It consumes camera images, a language instruction, and a robot state vector, and returns a continuous action chunk covering arms, end-effectors, grippers, dexterous hands, waist, head, and mobile-base signals in one unified 55-dimensional action space.
+
+SGLang serves LingBot-VLA-V2 through the native `multimodal_gen` runtime with the same four-stage VLA pipeline as Pi0.5. The architecture pairs a Qwen3-VL-4B vision-language prefix with a 36-layer mixture-of-experts action expert: every layer runs one joint attention over the concatenated prefix and action sequence, the flow-matching timestep conditions the expert through AdaRMSNorm gates, and the prefix K/V is encoded once and reused by all denoise steps. The prefix additionally carries the model's dual perceptual query tokens (current and future scene queries distilled from LingBot-Depth and DINO-Video during training).
+
+Supported public checkpoint:
+
+| Checkpoint | Cameras | State Dim | Output Action Dim | Action Horizon | Denoise Steps |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `robbyant/lingbot-vla-v2-6b` | `camera_top`, `camera_wrist_left`, `camera_wrist_right` | 55 | 55 | 50 | 10 |
+
+The server exchanges normalized states and actions: apply your robot's normalization statistics on the client, exactly as with the reference deployment (the released checkpoint ships no normalization stats).
+
+References:
+
+- [robbyant/lingbot-vla-v2-6b](https://huggingface.co/robbyant/lingbot-vla-v2-6b)
+- [LingBot-VLA-V2 reference implementation](https://github.com/robbyant/lingbot-vla-v2)
+
+## 2. Installation
+
+```bash Command
+git clone https://github.com/sgl-project/sglang.git
+cd sglang
+pip install -e "python[diffusion]"
+```
+
+For general environment setup, see the [SGLang Diffusion installation guide](/docs/sglang-diffusion/installation).
+
+## 3. Model Deployment
+
+```bash Command
+sglang serve robbyant/lingbot-vla-v2-6b \
+  --model-type diffusion \
+  --host 127.0.0.1 \
+  --port 30000
+```
+
+The registered checkpoint dispatches to the native `multimodal_gen` LingBot-VLA-V2 pipeline automatically. The model loads in bfloat16 and needs roughly 14 GB of GPU memory.
+
+## 4. API Usage
+
+The generic action API is shared with Pi0.5; see the [Pi0.5 request schema](/cookbook/vla/OpenPI/Pi0.5#31-action-request-schema) for the full field list. LingBot-VLA-V2 specifics: camera images are resized to 256x256 on the server, the state vector may have up to 55 dimensions (shorter vectors are zero-padded), and optional `noise` must have shape `[50, 55]`.
+
+```python Example
+import numpy as np
+import requests
+
+image = np.zeros((256, 256, 3), dtype=np.uint8)
+payload = {
+    "model": "robbyant/lingbot-vla-v2-6b",
+    "input": {
+        "task": "pick up the blue block and place it in the bin",
+        "observation": {
+            "images": {
+                "camera_top": image.tolist(),
+                "camera_wrist_left": image.tolist(),
+                "camera_wrist_right": image.tolist(),
+            },
+            "state": np.zeros(55, dtype=np.float32).tolist(),
+        },
+    },
+    "runtime": {"return_timing": True},
+}
+
+response = requests.post(
+    "http://127.0.0.1:30000/v1/actions/generations",
+    json=payload,
+    timeout=60,
+)
+response.raise_for_status()
+data = response.json()
+
+actions = data["data"][0]["action"]["values"]
+print(len(actions), len(actions[0]))  # 50 x 55 normalized action chunk
+print(data.get("timings"))
+```
+
+`/v1/actions/metadata` reports the camera keys, dimensions, and defaults of the served policy; `/v1/actions/realtime` provides the generic msgpack websocket path.
+
+## 5. Notes
+
+- v1 serves monolithic single-GPU execution with one observation per request. Grouped batching, CUDA graphs, and prefix/action split parallelism are not enabled for this model yet.
+- Missing cameras can be masked out via `observation.image_masks`, matching the reference model's padded-camera behavior.
