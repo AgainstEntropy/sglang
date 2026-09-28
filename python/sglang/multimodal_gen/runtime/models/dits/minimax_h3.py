@@ -663,15 +663,18 @@ def _kv_gather_attention_varlen(
 ) -> torch.Tensor:
     """K/V-gather SP attention over this rank's packed row shard.
 
-    Q stays sequence-sharded with every TP-local head; K and V travel as one
-    stacked all-gather so each rank attends its query rows against the full
-    packed sequence with the backend's dense (Sq != Sk) kernel. Only the real
-    prefix is used as keys, so padding never contributes; padding query rows
-    produce unused output, as in ring.
+    Q stays sequence-sharded with every TP-local head; K and V are all-gathered
+    so each rank attends its query rows against the full packed sequence with
+    the backend's dense (Sq != Sk) kernel. Only the real prefix is used as keys,
+    so padding never contributes; padding query rows produce unused output, as
+    in ring.
     """
-    kv = sequence_model_parallel_all_gather(torch.stack((k, v)), dim=1)
+    # a row-dim gather lands as the contiguous full sequence; a stacked dim-1
+    # gather costs a strided stack copy plus a post-gather reshape copy
+    k = sequence_model_parallel_all_gather(k.contiguous(), dim=0)
+    v = sequence_model_parallel_all_gather(v.contiguous(), dim=0)
     out = attn_impl.forward(
-        q[None], kv[0, None, :real_seq_len], kv[1, None, :real_seq_len], None
+        q[None], k[None, :real_seq_len], v[None, :real_seq_len], None
     )
     return out[0]
 

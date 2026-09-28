@@ -42,20 +42,19 @@ class TestKVGatherAttention(unittest.TestCase):
         scale = head_dim**-0.5
         impl = _DenseImpl(scale)
         expected = _sdpa_thd(q[:used], k[:used], v[:used], scale)
-        gathered = torch.stack((k, v))
 
         for rank in range(world):
             rows = slice(rank * local_rows, (rank + 1) * local_rows)
             with patch(
                 f"{_H3}.sequence_model_parallel_all_gather",
-                return_value=gathered,
+                side_effect=[k, v],
             ) as all_gather:
                 out = _kv_gather_attention_varlen(
                     q[rows], k[rows], v[rows], attn_impl=impl, real_seq_len=used
                 )
-            local_kv, dim = all_gather.call_args.args[0], all_gather.call_args.kwargs
-            self.assertEqual(tuple(local_kv.shape), (2, local_rows, heads, head_dim))
-            self.assertEqual(dim, {"dim": 1})
+            for call, local in zip(all_gather.call_args_list, (k[rows], v[rows])):
+                torch.testing.assert_close(call.args[0], local)
+                self.assertEqual(call.kwargs, {"dim": 0})
             self.assertEqual(tuple(out.shape), (local_rows, heads, head_dim))
             real = min(max(used - rank * local_rows, 0), local_rows)
             torch.testing.assert_close(out[:real], expected[rows][:real])
