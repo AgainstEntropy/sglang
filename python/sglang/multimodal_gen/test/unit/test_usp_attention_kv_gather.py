@@ -14,6 +14,7 @@ from sglang.multimodal_gen.runtime.layers.attention.layer import (
     _resolve_sp_attention_mode,
 )
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.multimodal_gen.runtime.server_args import get_global_server_args
 from sglang.test.test_utils import CustomTestCase
 
 _LAYER = "sglang.multimodal_gen.runtime.layers.attention.layer"
@@ -300,6 +301,23 @@ class TestSpAttentionModeResolution(unittest.TestCase):
             self._resolve(auto=False, causal=True)
         with self.assertRaises(NotImplementedError):
             self._resolve(auto=False, sparse=True)
+
+    def test_layer_outside_sp_ignores_explicit_gather_degree(self):
+        # e.g. the MiniMax-H3 audio VAE's causal attention runs replicated
+        args = get_global_server_args()
+        with (
+            patch.object(args, "kv_gather_degree", 2),
+            patch.object(args, "sp_split_auto", False),
+        ):
+            attn = USPAttention(
+                num_heads=2,
+                head_size=8,
+                causal=True,
+                supported_attention_backends={AttentionBackendEnum.TORCH_SDPA},
+                default_attention_backend=AttentionBackendEnum.TORCH_SDPA,
+                skip_sequence_parallel=True,
+            )
+        self.assertEqual(attn.sp_attention_mode, "ulysses")
 
 
 class TestKVGatherCallSupport(unittest.TestCase):

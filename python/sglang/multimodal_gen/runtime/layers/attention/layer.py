@@ -885,8 +885,12 @@ class USPAttention(nn.Module):
 
         self.skip_sequence_parallel = skip_sequence_parallel
         self.enable_packed_qkv_input_a2a = bool(enable_packed_qkv_input_a2a)
+        # a layer that never takes the SP exchange must not fail the gather
+        # mode's causal/sparse checks at construction
         self.sp_attention_mode, self.sp_attention_mode_is_auto = (
-            _resolve_sp_attention_mode(
+            ("ulysses", False)
+            if skip_sequence_parallel
+            else _resolve_sp_attention_mode(
                 causal=causal, sparse_backend=self.backend.is_sparse
             )
         )

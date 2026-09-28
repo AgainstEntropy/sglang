@@ -49,6 +49,7 @@ from sglang.multimodal_gen.runtime.cache.spectrum import (
 )
 from sglang.multimodal_gen.runtime.distributed import (
     get_tp_world_size,
+    sequence_model_parallel_all_gather,
     tensor_model_parallel_all_gather,
 )
 from sglang.multimodal_gen.runtime.distributed.parallel_state import (
@@ -57,6 +58,9 @@ from sglang.multimodal_gen.runtime.distributed.parallel_state import (
 )
 from sglang.multimodal_gen.runtime.layers.attention.backends.attention_backend import (
     AttentionRequirements,
+)
+from sglang.multimodal_gen.runtime.layers.attention.layer import (
+    _resolve_sp_attention_mode,
 )
 from sglang.multimodal_gen.runtime.layers.attention.selector import (
     claim_deferred_component_attn_backend,
@@ -649,6 +653,29 @@ class MiniMaxH3TimeEmbedder(nn.Module):
         return out
 
 
+def _kv_gather_attention_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_impl,
+    real_seq_len: int,
+) -> torch.Tensor:
+    """K/V-gather SP attention over this rank's packed row shard.
+
+    Q stays sequence-sharded with every TP-local head; K and V travel as one
+    stacked all-gather so each rank attends its query rows against the full
+    packed sequence with the backend's dense (Sq != Sk) kernel. Only the real
+    prefix is used as keys, so padding never contributes; padding query rows
+    produce unused output, as in ring.
+    """
+    kv = sequence_model_parallel_all_gather(torch.stack((k, v)), dim=1)
+    out = attn_impl.forward(
+        q[None], kv[0, None, :real_seq_len], kv[1, None, :real_seq_len], None
+    )
+    return out[0]
+
+
 def _minimax_h3_attention_core_impl(
     attention: MiniMaxH3Attention,
     q: torch.Tensor,
@@ -670,6 +697,23 @@ def _minimax_h3_attention_core_impl(
     kernel and sequence-parallel collectives execute eagerly.
     """
 
+    if attention._attention_impl is None:
+        attention._set_attention_backend(
+            get_attn_backend(
+                attention.head_dim,
+                q.dtype,
+                selected_attention_backend=attention._selected_attention_backend,
+                attention_requirements=AttentionRequirements(packed_varlen=True),
+            )
+        )
+
+    if ulysses_active and attention._uses_kv_gather():
+        # max_seqlen is cu_seqlens[1] (`used`) by construction: the packed
+        # sequence is one real document followed by trailing padding.
+        return _kv_gather_attention_varlen(
+            q, k, v, attn_impl=attention._attention_impl, real_seq_len=max_seqlen
+        )
+
     if ulysses_active:
         from sglang.multimodal_gen.runtime.layers.usp import (
             _usp_input_all_to_all,
@@ -680,16 +724,6 @@ def _minimax_h3_attention_core_impl(
         q, k, v = _usp_input_all_to_all_packed_qkv(q, k, v)
         if gate_compress is not None:
             gate_compress = _usp_input_all_to_all(gate_compress[None], head_dim=2)[0]
-
-    if attention._attention_impl is None:
-        attention._set_attention_backend(
-            get_attn_backend(
-                attention.head_dim,
-                q.dtype,
-                selected_attention_backend=attention._selected_attention_backend,
-                attention_requirements=AttentionRequirements(packed_varlen=True),
-            )
-        )
 
     if attention._attention_backend_enum is AttentionBackendEnum.VIDEO_SPARSE_ATTN_H3:
         attn_metadata = (
@@ -805,6 +839,7 @@ class MiniMaxH3Attention(nn.Module):
         self.prefix = prefix
         self._attention_impl = None
         self._attention_backend_enum: AttentionBackendEnum | None = None
+        self._kv_gather: bool | None = None
         # attention initializes on the first real QKV tensors, after the
         # component-loading context has ended; retain the transformer-scoped
         # selection so a component override is not silently lost at runtime
@@ -902,6 +937,21 @@ class MiniMaxH3Attention(nn.Module):
         # the resolved enum alongside the impl instance instead of a second
         # get_attn_backend() call at the ring gate.
         self._attention_backend_enum = backend.get_enum()
+        self._kv_gather = None
+
+    def _uses_kv_gather(self) -> bool:
+        """Resolve this layer's SP exchange on its first sequence-parallel call.
+
+        Sparse and hybrid backends have only the Ulysses exchange: under the
+        automatic SP2 default they keep it over the same process group, and an
+        explicit --kv-gather-degree fails closed.
+        """
+        if self._kv_gather is None:
+            mode, _ = _resolve_sp_attention_mode(
+                causal=False, sparse_backend=self._attention_backend_enum.is_sparse
+            )
+            self._kv_gather = mode == "kv_gather"
+        return self._kv_gather
 
     def _install_qkv_weight_loader(self, arch: MiniMaxH3DiTArchConfig) -> None:
         weight = self.qkv_proj.weight
@@ -1117,6 +1167,10 @@ class MiniMaxH3Attention(nn.Module):
             and self._attention_backend_enum
             is AttentionBackendEnum.HYBRID_WINDOW_ATTN_H3
         ):
+            # the hybrid core has only a Ulysses exchange; an explicit
+            # --kv-gather-degree fails closed here instead of degrading
+            if ulysses_active:
+                self._uses_kv_gather()
             return self.hybrid(
                 self,
                 x,
