@@ -444,6 +444,23 @@ class TestFlux2EagerFusions(CustomTestCase):
         self.assertFalse(flux2._FLUX2_SWIGLU.disabled)
         self.assertEqual(len(flux2._FLUX2_SWIGLU_SIGS), 2)
 
+    def test_swiglu_into_out_projection_input_matches_cat(self):
+        # The single-stream block builds its to_out input in place instead of
+        # cat([attn, swiglu(mlp)]); the GEMM input must stay byte-identical,
+        # including on the eager fallback.
+        torch.manual_seed(4)
+        attn = torch.randn(1, 64, 96, device="cuda", dtype=torch.bfloat16)
+        mlp_proj = torch.randn(1, 64, 768, device="cuda", dtype=torch.bfloat16)
+        expected = torch.cat([attn, _flux2_swiglu(mlp_proj)], dim=-1)
+
+        for disabled in (False, True):
+            flux2._FLUX2_SWIGLU.disabled = disabled
+            gemm_input = torch.full_like(expected, float("nan"))
+            returned = _flux2_swiglu(mlp_proj, out=gemm_input[..., 96:])
+            gemm_input[..., :96].copy_(attn)
+            self.assertEqual(returned.data_ptr(), gemm_input[..., 96:].data_ptr())
+            self.assertTrue(torch.equal(gemm_input, expected), disabled)
+
     def test_nvfp4_swiglu_quant_fusion_is_sm103_only(self):
         self.assertFalse(_can_use_nvfp4_swiglu_quant_fusion(DeviceCapability(10, 0)))
         self.assertTrue(_can_use_nvfp4_swiglu_quant_fusion(DeviceCapability(10, 3)))

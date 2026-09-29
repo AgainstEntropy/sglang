@@ -102,6 +102,23 @@ def test_packed_silu_mul_is_bit_exact(hidden, strided):
     assert torch.equal(fused_packed_silu_mul_bitexact(x), expected)
 
 
+def test_packed_silu_mul_writes_into_a_column_slice():
+    # FLUX.2 writes SwiGLU straight into the [attn | mlp] output-projection
+    # input, so `out` is a row-strided column slice of a wider buffer.
+    torch.manual_seed(2)
+    attn, hidden = 96, 384
+    x = torch.randn(1, 19, 2 * hidden, device="cuda", dtype=torch.bfloat16)
+    buf = torch.full((1, 19, attn + hidden), float("nan"), device="cuda").bfloat16()
+
+    out = fused_packed_silu_mul_bitexact(x, out=buf[..., attn:])
+
+    assert out.data_ptr() == buf[..., attn:].data_ptr()
+    assert torch.equal(buf[..., attn:], F.silu(x[..., :hidden]) * x[..., hidden:])
+    assert torch.isnan(buf[..., :attn]).all()
+    with pytest.raises(RuntimeError):
+        fused_packed_silu_mul_bitexact(x, out=buf[..., attn + 1 :])
+
+
 def test_silu_mul_rejects_mismatched_operands():
     a = torch.randn(1, 8, 64, device="cuda", dtype=torch.bfloat16)
     assert not can_use_fused_silu_mul(a, a.float())  # mixed dtypes
