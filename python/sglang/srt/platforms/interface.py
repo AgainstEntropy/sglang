@@ -103,6 +103,48 @@ class SRTPlatform(DeviceMixin):
         """Return a platform implementation for speculative KV-cache locations."""
         return None
 
+    def get_speculative_worker_cls(self, algorithm: str) -> Optional[type]:
+        """Return a platform worker class for a speculative algorithm.
+
+        ``None`` (the default) keeps the built-in worker. A platform that
+        cannot run the built-in worker (for example one that keeps
+        speculative bookkeeping on the host) returns its own class. It is
+        constructed with the built-in worker's keyword arguments and must
+        provide the same scheduler-facing interface.
+        """
+        return None
+
+    def get_speculative_graph_runner_cls(
+        self, algorithm: str, phase: str
+    ) -> Optional[type]:
+        """Return the graph runner class for a speculative decoding phase.
+
+        ``phase`` is ``"draft_decode"`` (multi-step draft decode),
+        ``"draft_extend"`` (draft extend after verify) or ``"target_verify"``
+        (per-configuration target runner for adaptive speculation). The class
+        is constructed exactly like the built-in runner for that phase.
+        ``None`` (the default) skips capture; that phase then runs eagerly.
+        """
+        return None
+
+    def create_speculative_draft_attention_backend(
+        self,
+        algorithm: str,
+        phase: str,
+        draft_model_runner: Any,
+        topk: int,
+        speculative_num_steps: int,
+    ) -> Any:
+        """Create a draft attention backend for a platform attention backend.
+
+        Called when the configured backend is not one of the built-in draft
+        backends. For ``phase == "draft_decode"`` return a multi-step container
+        exposing ``attn_backends`` (one backend per draft step); for
+        ``phase == "draft_extend"`` return an ``AttentionBackend``. Return ``None``
+        when the phase needs no backend (for example steps <= 1).
+        """
+        raise NotImplementedError
+
     def get_quantization_config(
         self, quantization: str
     ) -> Optional[Type[QuantizationConfig]]:
