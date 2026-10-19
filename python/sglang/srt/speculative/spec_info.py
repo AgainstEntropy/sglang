@@ -308,6 +308,15 @@ class SpeculativeAlgorithm(Enum):
             "Cannot create worker for NONE speculative algorithm."
         )
 
+        from sglang.srt.platforms import current_platform
+
+        if current_platform.is_out_of_tree():
+            platform_worker_cls = current_platform.get_speculative_worker_cls(
+                algorithm=self.name
+            )
+            if platform_worker_cls is not None:
+                return platform_worker_cls
+
         if self.is_dflash():
             # V2 worker drives both overlap and non-overlap (scheduler runs it
             # synchronously when overlap is disabled), same as EAGLE.

@@ -49,6 +49,7 @@ class DraftBackendFactory:
         backend_name: str,
         backend_map: dict,
         error_template: str,
+        phase: str,
         stamps_children: bool = False,
     ):
         # The split pair with the base-backend fallback already applied.
@@ -60,10 +61,15 @@ class DraftBackendFactory:
         )
         backend_type = self.draft_attn_backend or configured
 
-        if backend_type not in backend_map:
-            raise ValueError(error_template.format(backend_type=backend_type))
-
-        stamp, backend = backend_map[backend_type]()
+        if backend_type in backend_map:
+            stamp, backend = backend_map[backend_type]()
+        else:
+            created = self._create_platform_backend(
+                backend_type=backend_type, phase=phase
+            )
+            if created is None:
+                raise ValueError(error_template.format(backend_type=backend_type))
+            stamp, backend = created
         if backend is not None:
             if stamps_children:
                 from sglang.srt.layers.attention.attention_registry import (
@@ -80,6 +86,26 @@ class DraftBackendFactory:
                     child.prefill_attention_backend_str = stamp
                     child.decode_attention_backend_str = stamp
         return backend
+
+    def _create_platform_backend(self, *, backend_type: str, phase: str):
+        from sglang.srt.platforms import current_platform
+
+        algorithm = get_spec().speculative_algorithm
+        if not (
+            current_platform.is_out_of_tree()
+            and current_platform.supports_speculative_draft_attention_backend(
+                algorithm=algorithm, backend=backend_type
+            )
+        ):
+            return None
+        backend = current_platform.create_speculative_draft_attention_backend(
+            algorithm=algorithm,
+            phase=phase,
+            draft_model_runner=self.draft_model_runner,
+            topk=self.topk,
+            speculative_num_steps=self.speculative_num_steps,
+        )
+        return backend_type, backend
 
     def create_decode_backend(self):
         # No multi-step draft backend for steps=0 (nospec) or steps=1.
@@ -117,6 +143,7 @@ class DraftBackendFactory:
             "decode_attention_backend",
             backend_map,
             "EAGLE is not supported in decode attention backend {backend_type}",
+            phase="draft_decode",
             stamps_children=True,
         )
 
@@ -153,6 +180,7 @@ class DraftBackendFactory:
             backend_name,
             backend_map,
             "EAGLE is not supported in attention backend {backend_type}",
+            phase="draft_extend",
         )
         # A draft with conv layers of its own (Inkling) needs its sidecar here too.
         from sglang.srt.layers.attention.attention_registry import (

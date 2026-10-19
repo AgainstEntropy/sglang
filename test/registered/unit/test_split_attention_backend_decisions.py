@@ -214,6 +214,7 @@ class TestDraftFactoryStamping(CustomTestCase):
             "decode_attention_backend",
             {"triton": lambda: ("triton", container)},
             "unsupported {backend_type}",
+            phase="draft_decode",
             stamps_children=True,
         )
         # EAGLE's eager loop puts the children into the ForwardContext
@@ -230,6 +231,7 @@ class TestDraftFactoryStamping(CustomTestCase):
             "decode_attention_backend",
             {"trtllm_mha": lambda: ("trtllm_mha", SimpleNamespace(attn_backends=[]))},
             "unsupported {backend_type}",
+            phase="draft_decode",
             stamps_children=True,
         )
         self.assertEqual(product.prefill_attention_backend_str, "trtllm_mha")
@@ -275,6 +277,7 @@ class TestDraftFactoryStamping(CustomTestCase):
             "decode_attention_backend",
             {"hybrid_linear_attn": lambda: ("triton", concrete)},
             "unsupported {backend_type}",
+            phase="draft_decode",
             stamps_children=True,
         )
         self.assertEqual(product.prefill_attention_backend_str, "triton")

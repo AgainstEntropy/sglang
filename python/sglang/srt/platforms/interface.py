@@ -182,6 +182,42 @@ class SRTPlatform(DeviceMixin):
         """Return a platform implementation for speculative KV-cache locations."""
         return None
 
+    def get_speculative_worker_cls(self, algorithm: str) -> Optional[type]:
+        """Return a worker class replacing the built-in one, or None to keep it.
+
+        Constructed with the built-in worker's keyword arguments; must expose
+        the same scheduler-facing interface.
+        """
+        return None
+
+    def get_speculative_graph_runner_cls(
+        self, algorithm: str, phase: str
+    ) -> Optional[type]:
+        """Return the graph runner for ``phase``, or None to run it eagerly.
+
+        ``phase`` is ``"draft_decode"``, ``"draft_extend"`` or
+        ``"target_verify"`` (adaptive speculation); the class is constructed
+        like the built-in runner for that phase.
+        """
+        return None
+
+    def create_speculative_draft_attention_backend(
+        self,
+        algorithm: str,
+        phase: str,
+        draft_model_runner: Any,
+        topk: int,
+        speculative_num_steps: int,
+    ) -> Any:
+        """Create a draft backend the built-in map lacks.
+
+        Called only when ``supports_speculative_draft_attention_backend``
+        accepts it. ``"draft_decode"`` returns a container exposing
+        ``attn_backends`` (one per step); ``"draft_extend"`` an
+        ``AttentionBackend``.
+        """
+        raise NotImplementedError
+
     def get_quantization_config(
         self, quantization: str
     ) -> Optional[Type[QuantizationConfig]]:

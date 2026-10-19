@@ -1,7 +1,7 @@
 import contextlib
 import logging
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import torch
 
@@ -59,6 +59,7 @@ from sglang.srt.model_executor.runner import (
     get_batch_sizes_to_capture,
 )
 from sglang.srt.model_loader.weight_utils import get_pp_stage_load_group
+from sglang.srt.platforms import current_platform
 from sglang.srt.runtime_context import (
     get_context,
     get_device,
@@ -142,6 +143,22 @@ _is_xpu = is_xpu()
 
 
 logger = logging.getLogger(__name__)
+
+
+def _select_spec_graph_runner_cls(
+    *,
+    builtin_runner_cls: Callable[[], Optional[type]],
+    algorithm: str,
+    phase: str,
+) -> Optional[type]:
+    """``builtin_runner_cls`` is evaluated only on built-in platforms."""
+    if not current_platform.is_out_of_tree():
+        return builtin_runner_cls()
+    if not current_platform.capabilities.graph_capture:
+        return None
+    return current_platform.get_speculative_graph_runner_cls(
+        algorithm=algorithm, phase=phase
+    )
 
 
 def _qsa_index_share_requested(hf_config) -> bool:
@@ -473,7 +490,18 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         # Capture draft
         decode_backend = get_exec().graph.cuda_graph_config.decode.backend
         capture_bs, _ = get_batch_sizes_to_capture(self.draft_runner)
-        if self.speculative_num_steps > 1:
+        draft_runner_cls = (
+            _select_spec_graph_runner_cls(
+                builtin_runner_cls=lambda: Device2DraftCudaGraphRunner[
+                    self.target_worker.device
+                ],
+                algorithm=self.speculative_algorithm.name,
+                phase="draft_decode",
+            )
+            if self.speculative_num_steps > 1
+            else None
+        )
+        if draft_runner_cls is not None:
             tic = time.perf_counter()
             before_mem = get_available_gpu_memory(self.device, self.gpu_id)
             log_info_on_rank0(
@@ -482,9 +510,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 f"num_tokens_per_req={self.topk}, bs={capture_bs}, "
                 f"avail mem={before_mem:.2f} GB",
             )
-            self.cuda_graph_runner = Device2DraftCudaGraphRunner[
-                self.target_worker.device
-            ](self)
+            self.cuda_graph_runner = draft_runner_cls(self)
             after_mem = get_available_gpu_memory(self.device, self.gpu_id)
             capture_time = time.perf_counter() - tic
             self._specialized_graph_memory_usage["draft_decode"] = (
@@ -567,17 +593,26 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         supports_cuda_draft_extend_graph = (
             _is_cuda or _is_musa
         ) and graph_supported_backend
+        extend_runner_cls = _select_spec_graph_runner_cls(
+            builtin_runner_cls=lambda: (
+                Device2ExtendCudaGraphRunner[self.target_worker.device]
+                if (
+                    _is_npu
+                    or _is_xpu
+                    or supports_cuda_draft_extend_graph
+                    or supports_hip_draft_extend_graph
+                )
+                else None
+            ),
+            algorithm=self.speculative_algorithm.name,
+            phase="draft_extend",
+        )
         # Capture extend
         # TODO: support draft extend cuda graph for more attention backends
         if (
             self.draft_extend_attn_backend
             and not envs.SGLANG_DISABLE_DRAFT_EXTEND_CUDA_GRAPH.get()
-            and (
-                _is_npu
-                or _is_xpu
-                or supports_cuda_draft_extend_graph
-                or supports_hip_draft_extend_graph
-            )
+            and extend_runner_cls is not None
         ):
             tic = time.perf_counter()
             before_mem = get_available_gpu_memory(self.device, self.gpu_id)
@@ -587,9 +622,7 @@ class EagleDraftWorker(EagleDraftWorkerBase):
                 f"num_tokens_per_req={self.speculative_num_draft_tokens}, "
                 f"bs={capture_bs}, avail mem={before_mem:.2f} GB",
             )
-            self.cuda_graph_runner_for_draft_extend = Device2ExtendCudaGraphRunner[
-                self.target_worker.device
-            ](self)
+            self.cuda_graph_runner_for_draft_extend = extend_runner_cls(self)
             # draft_extend is the step's last shared-buffer-reading phase; its
             # read-done event is what the scheduler's WAR barrier waits on.
             after_mem = get_available_gpu_memory(self.device, self.gpu_id)
@@ -1737,10 +1770,16 @@ class EAGLEWorkerV2(BaseSpecWorker):
                 target_model_runner.init_new_workspace = backup_init
 
             target_graph_runner = None
+            TargetGraphRunnerCls = None
             if not check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED):
-                TargetGraphRunnerCls = (
-                    NPUGraphRunner if _is_npu else DecodeCudaGraphRunner
+                TargetGraphRunnerCls = _select_spec_graph_runner_cls(
+                    builtin_runner_cls=lambda: (
+                        NPUGraphRunner if _is_npu else DecodeCudaGraphRunner
+                    ),
+                    algorithm=self.speculative_algorithm.name,
+                    phase="target_verify",
                 )
+            if TargetGraphRunnerCls is not None:
                 target_graph_before_mem = get_available_gpu_memory(
                     self.device, self.gpu_id
                 )
