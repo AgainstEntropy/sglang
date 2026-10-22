@@ -2177,10 +2177,7 @@ macro_rules! tree_core_methods {
             }
 
             /// Drain the queued placement events as tagged tuples.
-            fn take_events(&self, py: Python<'_>) -> PyResult<Py<PyList>>
-            where
-                for<'py> Vec<K::Atom>: IntoPyObject<'py>,
-            {
+            fn take_events(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
                 let events = py.detach(|| self.core().take_events());
                 let list = PyList::empty(py);
                 for event in events {

@@ -708,7 +708,7 @@ pub struct UnifiedTreeCore<K: ChildKeyType> {
     /// If true, events use the dynamo format: namespaced block hashes and extra_key.
     pub(crate) dynamo_kv_event_format: bool,
     /// Queued placement events, drained by take_events.
-    pub(crate) kv_event_queue: Vec<KvCacheEvent<K::Atom>>,
+    pub(crate) kv_event_queue: Vec<KvCacheEvent>,
     /// Namespaced event hashes, seeded only by cache_salt; events omit extra_key.
     pub(crate) namespaced_event_hashes: HashMap<NodeId, Vec<HashDigest>>,
     /// Hit count at which a node earns a host write-through backup.
@@ -3566,7 +3566,7 @@ impl<K: ChildKeyType> UnifiedTreeCore<K> {
     // ==== KV cache placement events ====
 
     /// Append an event, coalescing it with a compatible queue tail.
-    fn enqueue_kv_event_(&mut self, event: KvCacheEvent<K::Atom>) {
+    fn enqueue_kv_event_(&mut self, event: KvCacheEvent) {
         match (self.kv_event_queue.last_mut(), event) {
             (
                 Some(KvCacheEvent::BlockRemoved {
@@ -3720,7 +3720,9 @@ impl<K: ChildKeyType> UnifiedTreeCore<K> {
                 events.push(KvCacheEvent::BlockStored {
                     block_hashes: vec![block_hash],
                     parent_block_hash,
-                    token_ids: page.to_vec(),
+                    // The page's own tokens: a bigram page's raw span also
+                    // carries the next page's first token, which is dropped.
+                    token_ids: K::raw_token_ids(page)[..page.len()].to_vec(),
                     block_size: page.len(),
                     medium,
                     cache_salt: cache_salt.clone(),
@@ -3814,7 +3816,7 @@ impl<K: ChildKeyType> UnifiedTreeCore<K> {
     }
 
     /// Take all queued events, leaving the queue empty.
-    pub fn take_events(&mut self) -> Vec<KvCacheEvent<K::Atom>> {
+    pub fn take_events(&mut self) -> Vec<KvCacheEvent> {
         std::mem::take(&mut self.kv_event_queue)
     }
 
@@ -6223,11 +6225,12 @@ pub(crate) fn namespaced_block_hash(seed: Option<&HashDigest>, block_hash: i64) 
 
 /// A KV placement event; one stored event may carry multiple same-sized pages.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum KvCacheEvent<A> {
+pub enum KvCacheEvent {
     BlockStored {
         block_hashes: Vec<i64>,
         parent_block_hash: Option<i64>,
-        token_ids: Vec<A>,
+        /// Raw token ids, one per KV slot, for every key type.
+        token_ids: Vec<i64>,
         block_size: usize,
         medium: StorageMedium,
         cache_salt: Option<Arc<str>>,

@@ -2027,7 +2027,7 @@ def test_salted_eagle_events_match_the_bigram_hash_contract():
         BlockStored(
             block_hashes=hashes,
             parent_block_hash=None,
-            token_ids=[(1, 2), (2, 3), (3, 4), (4, 5)],
+            token_ids=[1, 2, 3, 4],
             block_size=2,
             lora_id=None,
             medium=StorageMedium.GPU,

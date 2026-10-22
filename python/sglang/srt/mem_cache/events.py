@@ -236,17 +236,14 @@ class KVCacheEventRecorder:
 
         page_index = 0
         logical_len = len(node.key)
-        is_bigram = node.key.is_bigram
         raw = node.key.token_ids
         for start in range(0, logical_len, self.page_size):
             end = min(start + self.page_size, logical_len)
             if end <= start:
                 continue
-            # Preserve historical event payload: bigram pages expose tuples.
-            if is_bigram:
-                page_tokens = [(raw[j], raw[j + 1]) for j in range(start, end)]
-            else:
-                page_tokens = list(raw[start:end])
+            # Raw token ids for every key type: bigram j starts at raw[j], so
+            # an EAGLE page publishes the same tokens a plain page would.
+            page_tokens = list(raw[start:end])
 
             block_hash = namespaced_block_hash(
                 hash_str_to_int64(event_hash_values[page_index]),

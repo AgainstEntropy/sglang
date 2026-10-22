@@ -612,6 +612,31 @@ class TestRadixCache(CustomTestCase):
                 else:
                     self.assertEqual(len(events), 0)
 
+    def test_eagle_kv_cache_events_publish_raw_token_ids(self):
+        """EAGLE (bigram) pages publish the same token ids as plain pages."""
+        published = {}
+        for is_eagle in (False, True):
+            cache = RadixCache(
+                CacheInitParams(
+                    disable=False,
+                    req_to_token_pool=None,
+                    token_to_kv_pool_allocator=None,
+                    page_size=2,
+                    is_eagle=is_eagle,
+                    enable_kv_cache_events=True,
+                )
+            )
+            cache.insert(
+                InsertParams(key=RadixKey(array("q", [1, 2, 3, 4, 5])), value=None)
+            )
+            published[is_eagle] = [
+                event.token_ids
+                for event in cache.take_events()
+                if isinstance(event, BlockStored)
+            ]
+        self.assertEqual(published[False], [[1, 2, 3, 4]])
+        self.assertEqual(published[True], published[False])
+
     def test_kv_cache_events_with_eviction(self):
         """Test KV cache events include removal events."""
         mock_allocator = unittest.mock.Mock()

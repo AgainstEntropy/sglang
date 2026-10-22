@@ -3692,7 +3692,7 @@ fn evict_all_device(tc: &mut UnifiedTreeCore<Vec<i64>>) {
     tc.evict_device_end(FULL);
 }
 
-fn stored_block_hashes(events: &[KvCacheEvent<i64>]) -> Vec<Vec<i64>> {
+fn stored_block_hashes(events: &[KvCacheEvent]) -> Vec<Vec<i64>> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -3812,7 +3812,7 @@ fn bigram_insert_events_carry_pair_token_payloads() {
                 .map(|hash| crate::node::hash_str_to_int64(hash))
                 .collect(),
             parent_block_hash: None,
-            token_ids: vec![(1, 2), (2, 3)],
+            token_ids: vec![1, 2],
             block_size: 1,
             medium: StorageMedium::Gpu,
             cache_salt: None,
