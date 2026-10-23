@@ -7,6 +7,7 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.fused_op import BaseFusedOp, register_fused_op
 from sglang.srt.utils import (
     is_cpu,
     is_cuda,
@@ -26,7 +27,6 @@ _is_xpu = is_xpu()
 
 if _is_cpu:
     from sgl_kernel import (
-        assign_draft_cache_locs_contiguous_cpu,
         assign_extend_cache_locs_cpu,
     )
 
@@ -82,6 +82,96 @@ def assign_draft_cache_locs_contiguous(
                 )
 
 
+class AssignDraftCacheLocsOp(BaseFusedOp):
+    """Gather each request's next ``topk * num_cols`` req_to_token slots, starting
+    at its seq_len, into ``out_cache_loc``; optionally write seq_len positions."""
+
+    op = "speculative.assign_draft_cache_locs_contiguous"
+
+    def forward_native(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        seq_lens: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        topk: int,
+        num_cols: int,
+        positions: Optional[torch.Tensor],
+        mrope: Optional[torch.Tensor],
+    ) -> None:
+        bs = seq_lens.numel()
+        copy_len = topk * num_cols
+        cols = seq_lens.unsqueeze(1) + torch.arange(copy_len, device=seq_lens.device)
+        out_cache_loc.view(bs, copy_len).copy_(
+            req_to_token[req_pool_indices.unsqueeze(1), cols]
+        )
+        if positions is not None:
+            positions.view(bs, topk).copy_(seq_lens.unsqueeze(1).expand(bs, topk))
+            if mrope is not None:
+                mrope.view(3, bs, topk).copy_(
+                    seq_lens.view(1, bs, 1).expand(3, bs, topk)
+                )
+
+    def forward_triton(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        seq_lens: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        topk: int,
+        num_cols: int,
+        positions: Optional[torch.Tensor],
+        mrope: Optional[torch.Tensor],
+    ) -> None:
+        bs = seq_lens.numel()
+        assign_draft_cache_locs_contiguous[(bs,)](
+            req_pool_indices,
+            req_to_token,
+            seq_lens,
+            out_cache_loc,
+            req_to_token.shape[1],
+            topk,
+            num_cols,
+            positions=positions,
+            mrope=mrope,
+            BS=bs,
+            WRITE_POSITIONS=positions is not None,
+            WRITE_MROPE=mrope is not None,
+        )
+
+    # Every in-tree accelerator runs the Triton kernel.
+    forward_cuda = forward_musa = forward_npu = forward_xpu = forward_triton
+
+    def forward_cpu(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        seq_lens: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        topk: int,
+        num_cols: int,
+        positions: Optional[torch.Tensor],
+        mrope: Optional[torch.Tensor],
+    ) -> None:
+        from sgl_kernel import assign_draft_cache_locs_contiguous_cpu
+
+        assert positions is None and mrope is None
+        assign_draft_cache_locs_contiguous_cpu(
+            req_pool_indices,
+            req_to_token,
+            seq_lens,
+            out_cache_loc,
+            req_to_token.shape[1],
+            topk,
+            num_cols,
+        )
+
+
+_ASSIGN_DRAFT_CACHE_LOCS = register_fused_op(
+    AssignDraftCacheLocsOp(), __name__, "_ASSIGN_DRAFT_CACHE_LOCS"
+)
+
+
 def assign_draft_cache_locs_contiguous_func(
     req_pool_indices: torch.Tensor,
     req_to_token: torch.Tensor,
@@ -94,32 +184,15 @@ def assign_draft_cache_locs_contiguous_func(
 ):
     """Copy each request's ``topk * num_cols`` slots from ``seq_lens`` on, and
     write the draft positions when ``positions`` is given."""
-    if _is_cpu:
-        assert positions is None and mrope is None, "CPU writes no positions"
-        assign_draft_cache_locs_contiguous_cpu(
-            req_pool_indices,
-            req_to_token,
-            seq_lens,
-            out_cache_loc,
-            req_to_token.shape[1],
-            topk,
-            num_cols,
-        )
-        return
-    bs = seq_lens.shape[0]
-    assign_draft_cache_locs_contiguous[(bs,)](
+    _ASSIGN_DRAFT_CACHE_LOCS(
         req_pool_indices,
         req_to_token,
         seq_lens,
         out_cache_loc,
-        req_to_token.shape[1],
         topk,
         num_cols,
-        positions=positions,
-        mrope=mrope,
-        BS=bs,
-        WRITE_POSITIONS=positions is not None,
-        WRITE_MROPE=mrope is not None,
+        positions,
+        mrope,
     )
 
 
@@ -156,6 +229,109 @@ def assign_req_to_token_pool(
         tl.store(token_pool + save_offset, data, mask=mask)
         save_offset += BLOCK_SIZE
         load_offset += BLOCK_SIZE
+
+
+def _req_to_token_spans(
+    *,
+    req_pool_indices: torch.Tensor,
+    start_offset: torch.Tensor,
+    end_offset: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """(row, column) of every slot in ``req_to_token[req, start:end]``, in request order."""
+    lengths = (end_offset - start_offset).long()
+    rows = torch.repeat_interleave(req_pool_indices.long(), lengths)
+    span_starts = torch.repeat_interleave(start_offset.long(), lengths)
+    token_starts = torch.repeat_interleave(torch.cumsum(lengths, 0) - lengths, lengths)
+    offsets = torch.arange(rows.numel(), device=rows.device) - token_starts
+    return rows, span_starts + offsets
+
+
+class AssignReqToTokenPoolOp(BaseFusedOp):
+    """Write ``out_cache_loc`` into ``req_to_token[req, start:end]`` row by row,
+    consuming ``out_cache_loc`` in request order."""
+
+    op = "speculative.assign_req_to_token_pool"
+
+    def forward_native(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        start_offset: torch.Tensor,
+        end_offset: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        batch_size: int,
+    ) -> None:
+        rows, cols = _req_to_token_spans(
+            req_pool_indices=req_pool_indices[:batch_size],
+            start_offset=start_offset[:batch_size],
+            end_offset=end_offset[:batch_size],
+        )
+        req_to_token[rows, cols] = out_cache_loc[: rows.numel()].to(req_to_token.dtype)
+
+    def forward_triton(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        start_offset: torch.Tensor,
+        end_offset: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        batch_size: int,
+    ) -> None:
+        assign_req_to_token_pool[(batch_size,)](
+            req_pool_indices,
+            req_to_token,
+            start_offset,
+            end_offset,
+            out_cache_loc,
+            req_to_token.shape[1],
+            next_power_of_2(batch_size),
+        )
+
+    # Every in-tree accelerator runs the Triton kernel.
+    forward_cuda = forward_musa = forward_npu = forward_xpu = forward_triton
+
+    def forward_cpu(
+        self,
+        req_pool_indices: torch.Tensor,
+        req_to_token: torch.Tensor,
+        start_offset: torch.Tensor,
+        end_offset: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        batch_size: int,
+    ) -> None:
+        from sgl_kernel import assign_req_to_token_pool_cpu
+
+        assign_req_to_token_pool_cpu(
+            req_pool_indices,
+            req_to_token,
+            start_offset,
+            end_offset,
+            out_cache_loc,
+            req_to_token.shape[1],
+        )
+
+
+_ASSIGN_REQ_TO_TOKEN_POOL = register_fused_op(
+    AssignReqToTokenPoolOp(), __name__, "_ASSIGN_REQ_TO_TOKEN_POOL"
+)
+
+
+def assign_req_to_token_pool_func(
+    req_pool_indices: torch.Tensor,
+    req_to_token: torch.Tensor,
+    start_offset: torch.Tensor,
+    end_offset: torch.Tensor,
+    out_cache_loc: torch.Tensor,
+    batch_size: int,
+) -> None:
+    _ASSIGN_REQ_TO_TOKEN_POOL(
+        req_pool_indices,
+        req_to_token,
+        start_offset,
+        end_offset,
+        out_cache_loc,
+        batch_size,
+    )
 
 
 @triton.jit
@@ -755,6 +931,84 @@ def assign_extend_cache_locs_func(
 
         return out_cache_loc
 
+    # An out-of-tree platform that provides no cache-locs function of its own.
+    rows, cols = _req_to_token_spans(
+        req_pool_indices=req_pool_indices[:batch_size],
+        start_offset=start_offset[:batch_size],
+        end_offset=end_offset[:batch_size],
+    )
+    out_cache_loc = torch.empty(
+        (batch_size * draft_token_num,), dtype=torch.int64, device=device
+    )
+    out_cache_loc[: rows.numel()] = req_to_token[rows, cols]
+    return out_cache_loc
+
+
+class FillFrontOutCacheLocOp(BaseFusedOp):
+    """Pack the first ``num_front[i]`` slots of request i's window in ``out_cache_loc``."""
+
+    op = "speculative.fill_front_out_cache_loc"
+
+    def forward_native(
+        self,
+        num_front: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        front_out_cache_loc: torch.Tensor,
+    ) -> None:
+        bs = num_front.numel()
+        window = out_cache_loc.view(bs, -1)
+        rows, cols = _req_to_token_spans(
+            req_pool_indices=torch.arange(bs, device=window.device),
+            start_offset=torch.zeros_like(num_front),
+            end_offset=num_front,
+        )
+        front_out_cache_loc[: rows.numel()] = window[rows, cols].to(
+            front_out_cache_loc.dtype
+        )
+
+    def forward_triton(
+        self,
+        num_front: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        front_out_cache_loc: torch.Tensor,
+    ) -> None:
+        bs = num_front.numel()
+        window = out_cache_loc.view(bs, -1)
+        assign_extend_cache_locs[(bs,)](
+            torch.arange(bs, device=window.device),
+            window,
+            torch.zeros_like(num_front),
+            num_front,
+            front_out_cache_loc,
+            window.shape[1],
+            next_power_of_2(bs),
+        )
+
+    # Every in-tree accelerator runs the Triton kernel.
+    forward_cuda = forward_musa = forward_npu = forward_xpu = forward_triton
+
+    def forward_cpu(
+        self,
+        num_front: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        front_out_cache_loc: torch.Tensor,
+    ) -> None:
+        bs = num_front.numel()
+        window = out_cache_loc.view(bs, -1)
+        assign_extend_cache_locs_cpu(
+            torch.arange(bs, device=window.device),
+            window.int(),
+            torch.zeros_like(num_front),
+            num_front,
+            front_out_cache_loc,
+            window.shape[1],
+        )
+
+
+_FILL_FRONT_OUT_CACHE_LOC = register_fused_op(
+    FillFrontOutCacheLocOp(), __name__, "_FILL_FRONT_OUT_CACHE_LOC"
+)
+
 
 def fill_front_out_cache_loc_func(
     num_front: torch.Tensor,
@@ -762,26 +1016,4 @@ def fill_front_out_cache_loc_func(
     front_out_cache_loc: torch.Tensor,  # mutable
 ):
     """Pack the first ``num_front[i]`` slots of request i's window in ``out_cache_loc``."""
-    bs = num_front.numel()
-    window = out_cache_loc.view(bs, -1)
-    rows = torch.arange(bs, device=window.device)
-    starts = torch.zeros_like(num_front)
-    if _is_cpu:
-        assign_extend_cache_locs_cpu(
-            rows,
-            window.int(),
-            starts,
-            num_front,
-            front_out_cache_loc,
-            window.shape[1],
-        )
-        return
-    assign_extend_cache_locs[(bs,)](
-        rows,
-        window,
-        starts,
-        num_front,
-        front_out_cache_loc,
-        window.shape[1],
-        next_power_of_2(bs),
-    )
+    _FILL_FRONT_OUT_CACHE_LOC(num_front, out_cache_loc, front_out_cache_loc)

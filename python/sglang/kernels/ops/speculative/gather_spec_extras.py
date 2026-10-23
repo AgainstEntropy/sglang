@@ -6,6 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.fused_op import BaseFusedOp, register_fused_op
+
 
 @triton.jit
 def _gather_rows_kernel(
@@ -57,17 +59,15 @@ def _empty_like_rows(buf: torch.Tensor, m: int) -> torch.Tensor:
     return torch.empty((m, *buf.shape[1:]), dtype=buf.dtype, device=buf.device)
 
 
-def gather_spec_extras(
+def _gather_spec_extras_triton(
     indices: torch.Tensor,
     topk_p_buf: torch.Tensor,
     topk_index_buf: torch.Tensor,
     output_tokens_buf: torch.Tensor,
     hidden_states_buf: Optional[torch.Tensor],
 ):
-    """Gather spec extras (topk_p / topk_index / bonus_tokens / optional hidden
-    states) by a shared row index in a single fused Triton launch (one kernel
-    for all buffers) instead of one advanced-index gather per buffer.
-    `hidden_states_buf` is None when the build does not capture hidden states."""
+    """One fused Triton launch for all buffers instead of one advanced-index
+    gather per buffer."""
     # Source buffers are allocated once (torch.empty/full) and only ever mutated
     # in place, so they are guaranteed row-contiguous. `indices` flows from
     # several producers (req_pool_indices, filtered/merged future_indices); the
@@ -115,3 +115,55 @@ def gather_spec_extras(
         BLOCK=block,
     )
     return topk_p, topk_index, bonus_tokens, hidden_states
+
+
+class GatherSpecExtrasOp(BaseFusedOp):
+    """Gather topk_p / topk_index / bonus tokens / optional hidden states by row."""
+
+    op = "speculative.gather_spec_extras"
+
+    def forward_native(
+        self,
+        indices: torch.Tensor,
+        topk_p_buf: torch.Tensor,
+        topk_index_buf: torch.Tensor,
+        output_tokens_buf: torch.Tensor,
+        hidden_states_buf: Optional[torch.Tensor],
+    ):
+        hidden_states = (
+            hidden_states_buf[indices] if hidden_states_buf is not None else None
+        )
+        return (
+            topk_p_buf[indices],
+            topk_index_buf[indices],
+            output_tokens_buf[indices],
+            hidden_states,
+        )
+
+    def forward_triton(self, *args):
+        return _gather_spec_extras_triton(*args)
+
+    # Every in-tree device, CPU included, runs the Triton kernel.
+    forward_cuda = forward_musa = forward_npu = forward_xpu = forward_cpu = (
+        forward_triton
+    )
+
+
+_GATHER_SPEC_EXTRAS = register_fused_op(
+    GatherSpecExtrasOp(), __name__, "_GATHER_SPEC_EXTRAS"
+)
+
+
+def gather_spec_extras(
+    indices: torch.Tensor,
+    topk_p_buf: torch.Tensor,
+    topk_index_buf: torch.Tensor,
+    output_tokens_buf: torch.Tensor,
+    hidden_states_buf: Optional[torch.Tensor],
+):
+    """Gather spec extras (topk_p / topk_index / bonus_tokens / optional hidden
+    states) by a shared row index. `hidden_states_buf` is None when the build
+    does not capture hidden states."""
+    return _GATHER_SPEC_EXTRAS(
+        indices, topk_p_buf, topk_index_buf, output_tokens_buf, hidden_states_buf
+    )

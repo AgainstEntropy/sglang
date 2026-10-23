@@ -2,12 +2,13 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.fused_op import BaseFusedOp, register_fused_op
 from sglang.srt.utils import is_cpu, next_power_of_2
 
 _is_cpu = is_cpu()
 
 if _is_cpu:
-    from sgl_kernel import fill_accept_out_cache_loc_cpu, fill_bonus_tokens_cpu
+    from sgl_kernel import fill_accept_out_cache_loc_cpu
 
 
 @triton.jit
@@ -29,6 +30,57 @@ def fill_bonus_tokens(
     tl.store(bonus_tokens_ptr + pid, bonus_token)
 
 
+class FillBonusTokensOp(BaseFusedOp):
+    """bonus_tokens[i] = the last accepted token of request i, in place."""
+
+    op = "speculative.fill_bonus_tokens"
+
+    def forward_native(
+        self,
+        accept_tokens: torch.Tensor,
+        accept_lens: torch.Tensor,
+        bonus_tokens: torch.Tensor,
+        accept_stride: int,
+        batch_size: int,
+    ) -> None:
+        rows = torch.arange(batch_size, device=accept_lens.device)
+        bonus_tokens[:batch_size] = accept_tokens.reshape(-1)[
+            rows * accept_stride + accept_lens[:batch_size] - 1
+        ]
+
+    def forward_triton(
+        self,
+        accept_tokens: torch.Tensor,
+        accept_lens: torch.Tensor,
+        bonus_tokens: torch.Tensor,
+        accept_stride: int,
+        batch_size: int,
+    ) -> None:
+        fill_bonus_tokens[(batch_size,)](
+            accept_tokens, accept_lens, bonus_tokens, accept_stride
+        )
+
+    # Every in-tree accelerator runs the Triton kernel.
+    forward_cuda = forward_musa = forward_npu = forward_xpu = forward_triton
+
+    def forward_cpu(
+        self,
+        accept_tokens: torch.Tensor,
+        accept_lens: torch.Tensor,
+        bonus_tokens: torch.Tensor,
+        accept_stride: int,
+        batch_size: int,
+    ) -> None:
+        from sgl_kernel import fill_bonus_tokens_cpu
+
+        fill_bonus_tokens_cpu(accept_tokens, accept_lens, bonus_tokens, accept_stride)
+
+
+_FILL_BONUS_TOKENS = register_fused_op(
+    FillBonusTokensOp(), __name__, "_FILL_BONUS_TOKENS"
+)
+
+
 def fill_bonus_tokens_func(
     accept_tokens: torch.Tensor,
     accept_lens: torch.Tensor,
@@ -36,19 +88,8 @@ def fill_bonus_tokens_func(
     accept_stride: int,
     batch_size: int,
 ):
-    if _is_cpu:
-        fill_bonus_tokens_cpu(
-            accept_tokens,
-            accept_lens,
-            bonus_tokens,
-            accept_stride,
-        )
-        return
-    fill_bonus_tokens[(batch_size,)](
-        accept_tokens,
-        accept_lens,
-        bonus_tokens,
-        accept_stride,
+    _FILL_BONUS_TOKENS(
+        accept_tokens, accept_lens, bonus_tokens, accept_stride, batch_size
     )
 
 

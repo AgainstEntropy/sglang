@@ -11,7 +11,7 @@ from sglang.kernels.ops.memory.common import (
     get_last_loc_triton_safe,
     write_req_to_token_pool_triton,
 )
-from sglang.kernels.ops.speculative.cache_locs import assign_req_to_token_pool
+from sglang.kernels.ops.speculative.cache_locs import assign_req_to_token_pool_func
 from sglang.srt.hardware_backend.npu.dsv4.dsv4_common_hooks import (
     maybe_write_dsv4_decode,
     maybe_write_dsv4_extend,
@@ -23,6 +23,7 @@ from sglang.srt.mem_cache.common import (
     evict_from_tree_cache,
 )
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.platforms import current_platform
 from sglang.srt.runtime_context import attention_backends, get_parallel
 from sglang.srt.utils import (
     is_cpu,
@@ -30,7 +31,6 @@ from sglang.srt.utils import (
     is_hip,
     is_npu,
     is_xpu,
-    next_power_of_2,
     support_triton,
 )
 from sglang.srt.utils.common import is_pin_memory_available
@@ -41,8 +41,6 @@ _is_cuda = is_cuda()
 _is_xpu = is_xpu()
 _is_cpu = is_cpu()
 
-if _is_cpu:
-    from sgl_kernel import assign_req_to_token_pool_cpu
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
@@ -109,6 +107,14 @@ def get_last_loc(
     req_pool_indices_tensor: torch.Tensor,
     prefix_lens_tensor: torch.Tensor,
 ) -> torch.Tensor:
+    if (
+        current_platform.is_out_of_tree()
+        and not current_platform.capabilities.supports_triton
+    ):
+        return get_last_loc_torch(
+            req_to_token, req_pool_indices_tensor, prefix_lens_tensor
+        )
+
     prefill_backend, decode_backend = attention_backends()
     uses_triton_dispatch = prefill_backend not in (
         "ascend",
@@ -696,35 +702,6 @@ def alloc_for_decode(batch: ScheduleBatch, token_per_req: int) -> torch.Tensor:
 
 def _device_type(batch: ScheduleBatch) -> str:
     return torch.device(batch.device).type
-
-
-def assign_req_to_token_pool_func(
-    req_pool_indices: torch.Tensor,
-    req_to_token: torch.Tensor,
-    start_offset: torch.Tensor,
-    end_offset: torch.Tensor,
-    out_cache_loc: torch.Tensor,
-    batch_size: int,
-):
-    if _is_cpu:
-        assign_req_to_token_pool_cpu(
-            req_pool_indices,
-            req_to_token,
-            start_offset,
-            end_offset,
-            out_cache_loc,
-            req_to_token.shape[1],
-        )
-        return
-    assign_req_to_token_pool[(batch_size,)](
-        req_pool_indices,
-        req_to_token,
-        start_offset,
-        end_offset,
-        out_cache_loc,
-        req_to_token.shape[1],
-        next_power_of_2(batch_size),
-    )
 
 
 def _alloc_paged_token_slots_extend_npu(*args, **kwargs):
