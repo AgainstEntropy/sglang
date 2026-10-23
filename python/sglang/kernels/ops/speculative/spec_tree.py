@@ -17,6 +17,7 @@ import torch
 import triton
 import triton.language as tl
 
+from sglang.kernels.fused_op import BaseFusedOp, register_fused_op
 from sglang.srt.utils import is_cpu, is_cuda, is_hip, is_musa, is_npu, is_xpu
 
 _is_cuda = is_cuda()
@@ -362,6 +363,137 @@ def sgl_build_tree_kernel_triton(
     )
 
 
+def _tree_parent_positions(
+    *, selected: list, parents: list, topk: int, draft_token_num: int
+) -> list:
+    """Tree-node index of each node's parent (0 is the root), or None if not found."""
+    parent_positions = [0] * draft_token_num
+    for i in range(1, draft_token_num):
+        parent_tb_idx = selected[i - 1] // topk
+        if parent_tb_idx == 0:
+            continue
+        parent_token_idx = parents[parent_tb_idx]
+        parent_positions[i] = (
+            selected.index(parent_token_idx) + 1
+            if parent_token_idx in selected[: draft_token_num - 1]
+            else None
+        )
+    return parent_positions
+
+
+class BuildEagleTreeOp(BaseFusedOp):
+    """Build the draft tree's retrieve links, positions and attention mask in place."""
+
+    op = "speculative.build_eagle_tree"
+
+    def forward_native(
+        self,
+        parent_list: torch.Tensor,
+        selected_index: torch.Tensor,
+        verified_seq_len: torch.Tensor,
+        tree_mask: torch.Tensor,
+        positions: torch.Tensor,
+        retrieve_index: torch.Tensor,
+        retrieve_next_token: torch.Tensor,
+        retrieve_next_sibling: torch.Tensor,
+        topk: int,
+        depth: int,
+        draft_token_num: int,
+        tree_mask_mode: int,
+    ) -> None:
+        if tree_mask_mode not in (TreeMaskMode.FULL_MASK, TreeMaskMode.QLEN_ONLY):
+            raise NotImplementedError(
+                f"tree_mask_mode={int(tree_mask_mode)} is not supported natively"
+            )
+        bs = verified_seq_len.numel()
+        seq_lens = verified_seq_len.tolist()
+        parent_rows = parent_list.reshape(bs, -1).tolist()
+        selected_rows = selected_index.tolist()
+        index_rows, next_token_rows, next_sibling_rows = [], [], []
+        position_values, mask_offsets, mask_values = [], [], []
+        seq_len_prefix_sum = 0
+        for b in range(bs):
+            seq_len = seq_lens[b]
+            selected = selected_rows[b]
+            parent_positions = _tree_parent_positions(
+                selected=selected,
+                parents=parent_rows[b],
+                topk=topk,
+                draft_token_num=draft_token_num,
+            )
+            # Head insertion from the last node, so siblings keep kernel order.
+            next_token = [-1] * draft_token_num
+            next_sibling = [-1] * draft_token_num
+            for i in range(draft_token_num - 1, 0, -1):
+                p = parent_positions[i]
+                if p is None:
+                    continue
+                if next_token[p] != -1:
+                    next_sibling[i] = next_token[p]
+                next_token[p] = i
+            index_rows.append(
+                list(range(b * draft_token_num, (b + 1) * draft_token_num))
+            )
+            next_token_rows.append(next_token)
+            next_sibling_rows.append(next_sibling)
+
+            if tree_mask_mode == TreeMaskMode.FULL_MASK:
+                row_stride = seq_len + draft_token_num
+                block_start = (
+                    draft_token_num * draft_token_num * b
+                    + seq_len_prefix_sum * draft_token_num
+                    + seq_len
+                )
+            else:
+                row_stride = draft_token_num
+                block_start = draft_token_num * draft_token_num * b
+            for row in range(draft_token_num):
+                # Each draft token attends to the root and to its ancestors.
+                attended = {0}
+                node, steps = row, 0
+                while node not in (0, None) and steps < depth:
+                    attended.add(node)
+                    node = parent_positions[node]
+                    steps += 1
+                position_values.append(seq_len + steps)
+                row_start = block_start + row_stride * row
+                for col in range(draft_token_num):
+                    mask_offsets.append(row_start + col)
+                    mask_values.append(col in attended)
+            seq_len_prefix_sum += seq_len
+
+        def _write(out: torch.Tensor, rows: list) -> None:
+            out.copy_(torch.tensor(rows, dtype=out.dtype).view_as(out))
+
+        _write(retrieve_index, index_rows)
+        _write(retrieve_next_token, next_token_rows)
+        _write(retrieve_next_sibling, next_sibling_rows)
+        _write(positions, position_values)
+        offsets = torch.tensor(mask_offsets, dtype=torch.long, device=tree_mask.device)
+        tree_mask.view(-1)[offsets] = torch.tensor(
+            mask_values, dtype=tree_mask.dtype, device=tree_mask.device
+        )
+
+    def forward_cuda(self, *args) -> None:
+        sgl_build_tree_kernel_efficient(*args)
+
+    forward_musa = forward_cuda
+
+    def forward_cpu(self, *args) -> None:
+        sgl_build_tree_kernel_efficient_cpu(*args)
+
+    def forward_npu(self, parent_list: torch.Tensor, *args) -> None:
+        torch.ops.npu.build_tree_kernel_efficient(
+            parent_list.to(dtype=torch.int64), *args
+        )
+
+    def forward_xpu(self, *args) -> None:
+        sgl_build_tree_kernel_triton(*args)
+
+
+_BUILD_EAGLE_TREE = register_fused_op(BuildEagleTreeOp(), __name__, "_BUILD_EAGLE_TREE")
+
+
 def build_tree_kernel_efficient_func(
     parent_list: torch.Tensor,
     top_scores_index: torch.Tensor,
@@ -376,66 +508,20 @@ def build_tree_kernel_efficient_func(
     num_verify_tokens: int,
     tree_mask_mode: TreeMaskMode,
 ) -> None:
-    if _is_npu:
-        torch.ops.npu.build_tree_kernel_efficient(
-            parent_list.to(dtype=torch.int64),
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            positions,
-            retrieve_index,
-            retrieve_next_token,
-            retrieve_next_sibling,
-            topk,
-            spec_steps,
-            num_verify_tokens,
-            tree_mask_mode,
-        )
-    elif _is_xpu:
-        sgl_build_tree_kernel_triton(
-            parent_list,
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            positions,
-            retrieve_index,
-            retrieve_next_token,
-            retrieve_next_sibling,
-            topk,
-            spec_steps,
-            num_verify_tokens,
-            tree_mask_mode,
-        )
-    elif _is_cpu:
-        sgl_build_tree_kernel_efficient_cpu(
-            parent_list,
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            positions,
-            retrieve_index,
-            retrieve_next_token,
-            retrieve_next_sibling,
-            topk,
-            spec_steps,
-            num_verify_tokens,
-            tree_mask_mode,
-        )
-    else:
-        sgl_build_tree_kernel_efficient(
-            parent_list,
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            positions,
-            retrieve_index,
-            retrieve_next_token,
-            retrieve_next_sibling,
-            topk,
-            spec_steps,
-            num_verify_tokens,
-            tree_mask_mode,
-        )
+    _BUILD_EAGLE_TREE(
+        parent_list,
+        top_scores_index,
+        seq_lens,
+        tree_mask,
+        positions,
+        retrieve_index,
+        retrieve_next_token,
+        retrieve_next_sibling,
+        topk,
+        spec_steps,
+        num_verify_tokens,
+        tree_mask_mode,
+    )
 
 
 def verify_tree_greedy_triton(
@@ -471,27 +557,83 @@ def verify_tree_greedy_triton(
     )
 
 
-def verify_tree_greedy_func(
-    predicts: torch.Tensor,
-    accept_index: torch.Tensor,
-    accept_token_num: torch.Tensor,
-    candidates: torch.Tensor,
-    retrieve_index: torch.Tensor,
-    retrieve_next_token: torch.Tensor,
-    retrieve_next_sibling: torch.Tensor,
-    target_predict: torch.Tensor,
-    topk: int = -1,
-):
-    if _is_cuda or _is_hip or _is_musa:
-        if _is_cuda or _is_hip:
-            from sglang.kernels.ops.speculative.tree import verify_tree_greedy
-        else:
-            from sgl_kernel import verify_tree_greedy
+class VerifyEagleTreeGreedyOp(BaseFusedOp):
+    """Accept the longest draft path whose tokens match the target's argmax, in place."""
+
+    op = "speculative.verify_eagle_tree_greedy"
+
+    def forward_native(
+        self,
+        predicts: torch.Tensor,
+        accept_index: torch.Tensor,
+        accept_token_num: torch.Tensor,
+        candidates: torch.Tensor,
+        retrieve_index: torch.Tensor,
+        retrieve_next_token: torch.Tensor,
+        retrieve_next_sibling: torch.Tensor,
+        target_predict: torch.Tensor,
+    ) -> None:
+        bs, num_draft_tokens = candidates.shape
+        num_speculative_tokens = accept_index.shape[1]
+        candidate_rows = candidates.tolist()
+        index_rows = retrieve_index.tolist()
+        next_token_rows = retrieve_next_token.tolist()
+        next_sibling_rows = retrieve_next_sibling.tolist()
+        targets = target_predict.reshape(-1).tolist()
+        predict_offsets, predict_values = [], []
+        accept_offsets, accept_values, accept_counts = [], [], []
+        for b in range(bs):
+            last_accept = index_rows[b][0]
+            accept_offsets.append(b * num_speculative_tokens)
+            accept_values.append(last_accept)
+            num_accept = 0
+            cur = 0
+            for _ in range(1, num_speculative_tokens):
+                cur = next_token_rows[b][cur]
+                while cur != -1:
+                    if candidate_rows[b][cur] == targets[last_accept]:
+                        predict_offsets.append(last_accept)
+                        predict_values.append(targets[last_accept])
+                        num_accept += 1
+                        last_accept = index_rows[b][cur]
+                        accept_offsets.append(b * num_speculative_tokens + num_accept)
+                        accept_values.append(last_accept)
+                        break
+                    cur = next_sibling_rows[b][cur]
+                if cur == -1:
+                    break
+            accept_counts.append(num_accept)
+            predict_offsets.append(last_accept)
+            predict_values.append(targets[last_accept])
+
+        def _scatter(out: torch.Tensor, offsets: list, values: list) -> None:
+            out.view(-1)[torch.tensor(offsets, dtype=torch.long, device=out.device)] = (
+                torch.tensor(values, dtype=out.dtype, device=out.device)
+            )
+
+        _scatter(predicts, predict_offsets, predict_values)
+        _scatter(accept_index, accept_offsets, accept_values)
+        accept_token_num.copy_(
+            torch.tensor(accept_counts, dtype=accept_token_num.dtype)
+        )
+
+    def forward_cuda(
+        self,
+        predicts: torch.Tensor,
+        accept_index: torch.Tensor,
+        accept_token_num: torch.Tensor,
+        candidates: torch.Tensor,
+        retrieve_index: torch.Tensor,
+        retrieve_next_token: torch.Tensor,
+        retrieve_next_sibling: torch.Tensor,
+        target_predict: torch.Tensor,
+    ) -> None:
+        from sglang.kernels.ops.speculative.tree import verify_tree_greedy
 
         verify_tree_greedy(
-            predicts=predicts,  # mutable
-            accept_index=accept_index,  # mutable
-            accept_token_num=accept_token_num,  # mutable
+            predicts=predicts,
+            accept_index=accept_index,
+            accept_token_num=accept_token_num,
             candidates=candidates,
             # kwarg LHS retained as `retrive_*` to match sgl_kernel op schema.
             retrive_index=retrieve_index,
@@ -500,21 +642,25 @@ def verify_tree_greedy_func(
             target_predict=target_predict,
         )
 
-    elif _is_cpu:
-        sgl_verify_tree_greedy_cpu(
-            predicts=predicts,  # mutable
-            accept_index=accept_index,  # mutable
-            accept_token_num=accept_token_num,  # mutable
-            candidates=candidates,
-            # kwarg LHS retained as `retrive_*` to match the CUDA op schema, so
-            # the CPU/CUDA call sites stay grep-symmetric.
-            retrive_index=retrieve_index,
-            retrive_next_token=retrieve_next_token,
-            retrive_next_sibling=retrieve_next_sibling,
-            target_predict=target_predict,
-        )
+    def forward_musa(self, *args) -> None:
+        from sgl_kernel import verify_tree_greedy
 
-    elif _is_npu:
+        verify_tree_greedy(*args)
+
+    def forward_cpu(self, *args) -> None:
+        sgl_verify_tree_greedy_cpu(*args)
+
+    def forward_npu(
+        self,
+        predicts: torch.Tensor,
+        accept_index: torch.Tensor,
+        accept_token_num: torch.Tensor,
+        candidates: torch.Tensor,
+        retrieve_index: torch.Tensor,
+        retrieve_next_token: torch.Tensor,
+        retrieve_next_sibling: torch.Tensor,
+        target_predict: torch.Tensor,
+    ) -> None:
         from sgl_kernel_npu.sample.verify_tree_greedy import verify_tree_greedy
 
         verify_tree_greedy(
@@ -528,15 +674,35 @@ def verify_tree_greedy_func(
             retrive_next_sibling=retrieve_next_sibling,
             target_predict=target_predict,
         )
-    elif _is_xpu:
-        verify_tree_greedy_triton(
-            predicts=predicts,
-            accept_index=accept_index,
-            accept_token_num=accept_token_num,
-            candidates=candidates,
-            retrieve_index=retrieve_index,
-            retrieve_next_token=retrieve_next_token,
-            retrieve_next_sibling=retrieve_next_sibling,
-            target_predict=target_predict,
-        )
+
+    def forward_xpu(self, *args) -> None:
+        verify_tree_greedy_triton(*args)
+
+
+_VERIFY_EAGLE_TREE_GREEDY = register_fused_op(
+    VerifyEagleTreeGreedyOp(), __name__, "_VERIFY_EAGLE_TREE_GREEDY"
+)
+
+
+def verify_tree_greedy_func(
+    predicts: torch.Tensor,
+    accept_index: torch.Tensor,
+    accept_token_num: torch.Tensor,
+    candidates: torch.Tensor,
+    retrieve_index: torch.Tensor,
+    retrieve_next_token: torch.Tensor,
+    retrieve_next_sibling: torch.Tensor,
+    target_predict: torch.Tensor,
+    topk: int = -1,
+):
+    _VERIFY_EAGLE_TREE_GREEDY(
+        predicts,
+        accept_index,
+        accept_token_num,
+        candidates,
+        retrieve_index,
+        retrieve_next_token,
+        retrieve_next_sibling,
+        target_predict,
+    )
     return predicts, accept_index, accept_token_num
