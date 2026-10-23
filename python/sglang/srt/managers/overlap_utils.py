@@ -13,6 +13,7 @@ from sglang.srt.runtime_context import (
     get_spec,
 )
 from sglang.srt.utils import is_cuda, is_hip, is_npu
+from sglang.srt.utils.common import get_compiler_backend
 
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
@@ -74,7 +75,7 @@ _is_npu = is_npu()
 _DEBUG_ASSERT = envs.SGLANG_IS_IN_CI.get()
 
 
-@torch.compile(dynamic=True, disable=_is_npu)
+@torch.compile(dynamic=True, backend=get_compiler_backend(), disable=_is_npu)
 def _assert_nonneg_and_invalidate(
     values: torch.Tensor, buf: torch.Tensor, indices: torch.Tensor
 ) -> None:

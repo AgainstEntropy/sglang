@@ -55,7 +55,7 @@ from sglang.srt.utils import (
     is_xpu,
 )
 from sglang.srt.utils.async_probe import maybe_detect_oob
-from sglang.srt.utils.common import fast_topk
+from sglang.srt.utils.common import fast_topk, get_compiler_backend
 from sglang.srt.utils.nvtx_utils import profile_range
 
 _is_cuda = is_cuda()
@@ -429,7 +429,7 @@ def _select_top_k_tokens_first(
     return input_ids, hidden_states, topk_p, tree_info
 
 
-@torch.compile(dynamic=True, disable=_is_npu or _is_xpu)
+@torch.compile(dynamic=True, backend=get_compiler_backend(), disable=_is_npu or _is_xpu)
 def _select_top_k_tokens_later(
     i: int,
     topk_p: torch.Tensor,
