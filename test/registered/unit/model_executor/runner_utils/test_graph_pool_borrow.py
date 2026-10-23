@@ -226,7 +226,7 @@ class TestGraphPoolBorrow(CustomTestCase):
             get_parallel().override(tp_group=tp_group),
             patch.object(
                 eagle_utils,
-                "tree_speculative_sampling_target_only",
+                "tree_speculative_sampling",
                 side_effect=fake_sampling,
             ),
         ):

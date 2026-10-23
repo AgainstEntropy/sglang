@@ -134,6 +134,13 @@ def _medium_row_argmax(x, divisor=None):
 def row_argmax(x: torch.Tensor) -> torch.Tensor:
     """``x.argmax(dim=-1)`` for FP32 speculative logits with a wide vocab."""
     assert x.dim() == 2 and x.dtype == torch.float32 and x.stride(1) == 1
+    from sglang.srt.platforms import current_platform
+
+    if (
+        current_platform.is_out_of_tree()
+        and not current_platform.capabilities.supports_triton
+    ):
+        return x.argmax(dim=-1)
     rows, n = x.shape
     if rows > 64:
         return _medium_row_argmax(x)

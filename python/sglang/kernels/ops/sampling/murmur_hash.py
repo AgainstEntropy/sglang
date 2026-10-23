@@ -101,6 +101,35 @@ def murmur_hash32_kernel(
     tl.store(output_ptr + row_idx * num_cols + col_offsets, h, mask=mask)
 
 
+_U32 = 0xFFFFFFFF
+
+
+def _murmur3_mix_torch(h: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    # int64 math on values below 2**32: products wrap, but their low 32 bits are exact.
+    k = (k * 0xCC9E2D51) & _U32
+    k = ((k << 15) | (k >> 17)) & _U32
+    k = (k * 0x1B873593) & _U32
+    h = h ^ k
+    h = ((h << 13) | (h >> 19)) & _U32
+    return (h * 5 + 0xE6546B64) & _U32
+
+
+def _murmur_hash32_torch(seed, positions, col_indices):
+    """Pure-torch ``murmur_hash32`` for devices without Triton."""
+    seed = seed.view(torch.int64) if seed.dtype == torch.uint64 else seed.long()
+    h = _murmur3_mix_torch(torch.zeros_like(seed), seed & _U32)
+    h = _murmur3_mix_torch(h, (seed >> 32) & _U32)
+    h = _murmur3_mix_torch(h, positions.long() & _U32)
+    h = _murmur3_mix_torch(h.unsqueeze(1), (col_indices.long() & _U32).unsqueeze(0))
+    h = h ^ 16
+    h = h ^ (h >> 16)
+    h = (h * 0x85EBCA6B) & _U32
+    h = h ^ (h >> 13)
+    h = (h * 0xC2B2AE35) & _U32
+    h = h ^ (h >> 16)
+    return h.to(torch.uint32)
+
+
 def murmur_hash32(seed, positions, col_indices):
     assert seed.shape == positions.shape, (
         "Seed and positions must have the same shape (n,)"
@@ -108,6 +137,13 @@ def murmur_hash32(seed, positions, col_indices):
     assert len(seed.shape) == 1 and len(col_indices.shape) == 1, (
         f"Inputs must be 1D tensors {seed.shape=} {col_indices.shape=}"
     )
+    from sglang.srt.platforms import current_platform
+
+    if (
+        current_platform.is_out_of_tree()
+        and not current_platform.capabilities.supports_triton
+    ):
+        return _murmur_hash32_torch(seed, positions, col_indices)
     device = seed.device
     if device.type == "cpu":
         import sgl_kernel  # noqa: F401

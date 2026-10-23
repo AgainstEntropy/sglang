@@ -8,15 +8,15 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 import torch
 
 from sglang.kernels.ops.sampling import softmax as sampling_softmax
-from sglang.kernels.ops.sampling.renorm import top_k_renorm_prob, top_p_renorm_prob
+from sglang.kernels.ops.sampling.renorm import renorm_top_k, renorm_top_p
 from sglang.kernels.ops.speculative.spec_tree import (
     TreeMaskMode,
     build_tree_kernel_efficient_func,
     verify_tree_greedy_func,
 )
 from sglang.kernels.ops.speculative.verify_sampling import (
-    chain_speculative_sampling_triton,
-    tree_speculative_sampling_target_only,
+    chain_speculative_sampling,
+    tree_speculative_sampling,
 )
 from sglang.srt.hardware_backend.npu.dsv4.dsv4_common_hooks import (
     maybe_build_dsv4_verify_bundle,
@@ -711,11 +711,11 @@ def eagle_sample(
             tp_group.broadcast(num_correct_drafts, src=0)
     else:
         if use_rejection_sampling:
-            sampling_fn = chain_speculative_sampling_triton
+            sampling_fn = chain_speculative_sampling
             if get_spec().speculative_use_block_verification:
                 sampling_fn = partial(sampling_fn, block_verification=True)
         else:
-            sampling_fn = tree_speculative_sampling_target_only
+            sampling_fn = tree_speculative_sampling
 
         expanded_temperature = torch.repeat_interleave(
             sampling_info.temperatures, verify_input.draft_token_num, dim=0
@@ -726,7 +726,7 @@ def eagle_sample(
         )  # (bs * num_draft_tokens, vocab_size)
         maybe_detect_nan(target_probs, "v2 verify: target_probs after softmax")
         if sampling_info.need_top_k_sampling:
-            target_probs = top_k_renorm_prob(
+            target_probs = renorm_top_k(
                 target_probs,
                 torch.repeat_interleave(
                     sampling_info.top_ks, verify_input.draft_token_num, dim=0
@@ -734,7 +734,7 @@ def eagle_sample(
             )  # (bs * num_draft_tokens, vocab_size)
             maybe_detect_nan(target_probs, "v2 verify: target_probs after top_k_renorm")
         if sampling_info.need_top_p_sampling:
-            target_probs = top_p_renorm_prob(
+            target_probs = renorm_top_p(
                 target_probs,
                 torch.repeat_interleave(
                     sampling_info.top_ps, verify_input.draft_token_num, dim=0
