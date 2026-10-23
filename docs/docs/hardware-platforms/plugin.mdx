@@ -697,6 +697,25 @@ field defaults to the conservative answer.
   </tbody>
 </table>
 
+### Speculative decoding
+
+EAGLE-family speculative decoding (EAGLE, EAGLE3, NEXTN / MTP, STANDALONE) runs on an out-of-tree platform once `supports_speculative_algorithm(algorithm)` returns True for it (NEXTN is asked as `"EAGLE"`). The platform then picks one of two paths:
+
+- **Bring your own worker.** Return a worker class from `get_speculative_worker_cls(algorithm)`. It replaces every built-in speculative worker for that algorithm and suits devices that keep the speculative bookkeeping on the host or compile one graph per shape. `--speculative-adaptive` falls back to static parameters, since only the built-in worker implements it.
+- **Use the built-in worker.** Return `None`. The speculative kernels the worker launches are `BaseFusedOp`s in `sglang.kernels.ops.speculative` (tree construction, greedy and sampled verification, KV-slot bookkeeping) and `sglang.kernels.ops.sampling` (top-k / top-p renormalization). An out-of-tree platform gets each op's pure-torch `forward_native`, which is correct but syncs with the host and cannot be captured in a graph. A few small helpers (the seeded-sampling hash, the Gumbel draft argmax, `get_last_loc`) take a torch path instead when the platform does not declare `capabilities.supports_triton`. Register faster kernels per op:
+
+  ```python
+  from sglang.kernels.fused_op import BaseFusedOp
+  from sglang.kernels.ops.speculative.spec_tree import VerifyEagleTreeGreedyOp
+
+  # Your own kernel, or the op's forward_triton when the device runs Triton.
+  BaseFusedOp.register_oot_forward(
+      VerifyEagleTreeGreedyOp, my_verify_tree_greedy, platform_key="my_device"
+  )
+  ```
+
+  Register the draft attention backend with `register_draft_attention_backend` (see the quick start), and the draft graph runners with `get_speculative_graph_runner_cls(algorithm, phase)`. Adaptive speculation builds its per-step target verify graphs from `get_graph_runner_cls()`.
+
 ### Platform and plugin environment variables
 
 <table style={{width: "100%", borderCollapse: "collapse", tableLayout: "fixed"}}>

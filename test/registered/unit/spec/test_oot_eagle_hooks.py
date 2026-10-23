@@ -5,13 +5,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch, sentinel
 
-import torch
-
-from sglang.kernels.ops.speculative import spec_tree
 from sglang.srt.arg_groups.speculative_hook import _check_oot_speculative_algorithm
 from sglang.srt.platforms.interface import PlatformCapabilities, SRTPlatform
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.speculative import eagle_utils, eagle_worker_v2
+from sglang.srt.speculative import eagle_worker_v2
 from sglang.srt.speculative.adaptive_spec_params import adaptive_unsupported_reason
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -97,54 +94,6 @@ class TestOOTPlatformWorkerAdaptive(CustomTestCase):
         self.assertIsNone(self._reason(_platform(worker_cls=None)))
         self.assertIsNone(
             self._reason(_platform(out_of_tree=False, worker_cls=_PlatformWorker))
-        )
-
-
-class TestOOTEagleKernelDispatch(CustomTestCase):
-    """An OOT device has no tree kernel; it must fail loudly, not compute nothing."""
-
-    def _run(self, platform: Mock, fn):
-        with contextlib.ExitStack() as stack:
-            for flag in DEVICE_FLAGS:
-                stack.enter_context(patch.object(spec_tree, flag, False))
-            stack.enter_context(patch.object(spec_tree, "current_platform", platform))
-            return fn()
-
-    def _build_tree(self):
-        return eagle_utils.build_tree_kernel_efficient(
-            bonus_tokens=torch.tensor([5]),
-            parent_list=torch.zeros((1, 2), dtype=torch.long),
-            top_scores_index=torch.zeros((1, 2), dtype=torch.long),
-            draft_tokens=torch.tensor([[6, 7]]),
-            seq_lens=torch.tensor([4]),
-            seq_lens_sum=4,
-            topk=1,
-            spec_steps=2,
-            num_verify_tokens=3,
-            tree_mask_mode=spec_tree.TreeMaskMode.QLEN_ONLY,
-        )
-
-    def _verify(self):
-        return spec_tree.verify_tree_greedy_func(
-            predicts=None,
-            accept_index=None,
-            accept_token_num=None,
-            candidates=None,
-            retrieve_index=None,
-            retrieve_next_token=None,
-            retrieve_next_sibling=None,
-            target_predict=None,
-        )
-
-    def test_out_of_tree_device_is_rejected(self):
-        for name, fn in (("build_tree", self._build_tree), ("verify", self._verify)):
-            with self.subTest(op=name):
-                with self.assertRaisesRegex(NotImplementedError, "no platform seam"):
-                    self._run(_platform(), fn)
-
-    def test_in_tree_verify_fallthrough_is_unchanged(self):
-        self.assertEqual(
-            self._run(_platform(out_of_tree=False), self._verify), (None, None, None)
         )
 
 
