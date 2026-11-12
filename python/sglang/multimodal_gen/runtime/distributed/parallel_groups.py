@@ -27,7 +27,6 @@ def set_seq_parallel_pg_by_sp_groups(
     sp_ring_degree,
     rank: int,
     sp_groups: list[list[int]],
-    use_ulysses_low: bool = True,
 ):
     """Create Ulysses/Ring process groups inside each SP group.
 
@@ -39,7 +38,6 @@ def set_seq_parallel_pg_by_sp_groups(
         sp_ring_degree: ring degree inside SP.
         rank: global rank of current process.
         sp_groups: list of global-rank lists for each SP group.
-        use_ulysses_low: keep the same semantics as the original function.
     """
     sp_degree = sp_ring_degree * sp_ulysses_degree
     assert sp_degree > 0
@@ -58,34 +56,19 @@ def set_seq_parallel_pg_by_sp_groups(
 
     # Important: create the groups in the same order on all ranks.
     for sp_ranks in sp_groups:
-        if use_ulysses_low:
-            for i in range(num_ulysses_pgs):
-                idx = list(range(i * sp_ulysses_degree, (i + 1) * sp_ulysses_degree))
-                ulysses_ranks = _map_indices_to_ranks(sp_ranks, idx)
-                group = new_device_group(ulysses_ranks)
-                if rank in ulysses_ranks:
-                    ulyssess_pg = group
+        for i in range(num_ulysses_pgs):
+            idx = list(range(i * sp_ulysses_degree, (i + 1) * sp_ulysses_degree))
+            ulysses_ranks = _map_indices_to_ranks(sp_ranks, idx)
+            group = new_device_group(ulysses_ranks)
+            if rank in ulysses_ranks:
+                ulyssess_pg = group
 
-            for i in range(num_ring_pgs):
-                idx = list(range(i, sp_degree, num_ring_pgs))
-                ring_ranks = _map_indices_to_ranks(sp_ranks, idx)
-                group = new_device_group(ring_ranks)
-                if rank in ring_ranks:
-                    ring_pg = group
-        else:
-            for i in range(num_ring_pgs):
-                idx = list(range(i * sp_ring_degree, (i + 1) * sp_ring_degree))
-                ring_ranks = _map_indices_to_ranks(sp_ranks, idx)
-                group = new_device_group(ring_ranks)
-                if rank in ring_ranks:
-                    ring_pg = group
-
-            for i in range(num_ulysses_pgs):
-                idx = list(range(i, sp_degree, num_ulysses_pgs))
-                ulysses_ranks = _map_indices_to_ranks(sp_ranks, idx)
-                group = new_device_group(ulysses_ranks)
-                if rank in ulysses_ranks:
-                    ulyssess_pg = group
+        for i in range(num_ring_pgs):
+            idx = list(range(i, sp_degree, num_ring_pgs))
+            ring_ranks = _map_indices_to_ranks(sp_ranks, idx)
+            group = new_device_group(ring_ranks)
+            if rank in ring_ranks:
+                ring_pg = group
 
     PROCESS_GROUP.ULYSSES_PG = ulyssess_pg
     PROCESS_GROUP.RING_PG = ring_pg
