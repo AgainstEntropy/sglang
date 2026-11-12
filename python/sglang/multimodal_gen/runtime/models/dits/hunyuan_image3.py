@@ -1122,8 +1122,8 @@ class HunyuanImage3ForCausalMM(CachableDiT):
             return False
         # Cond/uncond rows share one packed forward (same timestep), so skip
         # boundaries are step-unit based; no CFG doubling.
-        start_skipping, end_skipping = ctx.teacache_params.get_skip_boundaries(
-            ctx.num_inference_steps, do_cfg=False
+        start_skipping, end_skipping = ctx.teacache_params.get_skip_step_range(
+            ctx.num_inference_steps
         )
         is_boundary_step = (
             ctx.current_timestep < start_skipping

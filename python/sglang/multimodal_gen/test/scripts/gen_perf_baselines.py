@@ -27,8 +27,10 @@ from sglang.multimodal_gen.test.test_utils import (
 def _all_cases() -> list[DiffusionTestCase]:
     if current_platform.is_npu():
         import sglang.multimodal_gen.test.server.ascend.testcase_configs_npu as cfg
+    elif current_platform.is_musa():
+        import sglang.multimodal_gen.test.server.musa.testcase_configs_musa as cfg
     else:
-        import sglang.multimodal_gen.test.server.testcase_configs as cfg
+        import sglang.multimodal_gen.test.server.gpu_cases as cfg
 
     cases: list[DiffusionTestCase] = []
     for _, v in inspect.getmembers(cfg):
@@ -70,6 +72,8 @@ def _build_server_extra_args(case: DiffusionTestCase) -> str:
         a += " --text-encoder-cpu-offload"
     if server_args.ring_degree is not None:
         a += f" --ring-degree {server_args.ring_degree}"
+    if server_args.cfg_parallel:
+        a += " --enable-cfg-parallel"
     if server_args.lora_path:
         a += f" --lora-path {server_args.lora_path}"
 
@@ -82,9 +86,11 @@ def _build_server_extra_args(case: DiffusionTestCase) -> str:
 
 
 def _build_env_vars(case: DiffusionTestCase) -> dict[str, str]:
+    env_vars = {}
     if case.server_args.enable_cache_dit:
-        return {"SGLANG_CACHE_DIT_ENABLED": "true"}
-    return {}
+        env_vars["SGLANG_CACHE_DIT_ENABLED"] = "true"
+    env_vars.update(case.server_args.env_vars)
+    return env_vars
 
 
 def _torch_cleanup() -> None:
@@ -204,7 +210,7 @@ def main() -> int:
         case_ids = {c.id for c in all_cases}
         missing = sorted([i for i in ids if i not in case_ids])
         if missing:
-            sys.stderr.write(f"missing cases in testcase_configs.py: {len(missing)}\n")
+            sys.stderr.write(f"missing cases in the case config: {len(missing)}\n")
 
     if not cases:
         return 0

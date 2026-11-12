@@ -52,7 +52,7 @@ USE_NPU_CONFIGS = os.getenv("USE_NPU_CONFIGS", "0").lower() in ("1", "true")
 
 if USE_NPU_CONFIGS:
     BASELINE_REL_PATH = (
-        "python/sglang/multimodal_gen/test/server/perf_baselines_npu.json"
+        "python/sglang/multimodal_gen/test/server/ascend/perf_baselines_npu.json"
     )
     CASE_LIST_TO_SUITE = {
         "ONE_NPU_CASES": "1-npu",

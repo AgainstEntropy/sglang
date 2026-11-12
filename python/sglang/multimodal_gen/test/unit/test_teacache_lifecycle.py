@@ -10,6 +10,9 @@ import torch
 from sglang.multimodal_gen.configs.sample.teacache import TeaCacheParams
 from sglang.multimodal_gen.runtime.cache.teacache import TeaCacheMixin
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
+from sglang.multimodal_gen.runtime.models.dits.hunyuan_image3 import (
+    HunyuanImage3ForCausalMM,
+)
 from sglang.multimodal_gen.runtime.models.dits.wanvideo import WanTransformer3DModel
 from sglang.test.test_utils import CustomTestCase
 
@@ -77,6 +80,20 @@ class TestTeaCache(CustomTestCase):
             WanTransformer3DModel.retrieve_cached_states(cache, negative),
             negative + residual * 2,
         )
+
+    def test_hunyuan_image3_resolves_its_skip_window(self):
+        """HunyuanImage-3 raised AttributeError on its first TeaCache step
+        whenever the request carried teacache_params."""
+        cache = self._new_cache()
+        cache.time_embed = lambda timestep: timestep
+        with set_forward_context(0, None, self.batch):
+            should_skip = (
+                HunyuanImage3ForCausalMM.should_skip_forward_for_cached_states(
+                    cache, timestep=torch.tensor([1.0, 2.0])
+                )
+            )
+        self.assertFalse(should_skip)
+        self.assertTrue(cache.enable_teacache)
 
     def test_new_request_clears_completed_or_interrupted_state(self):
         """New requests must not inherit counters, residuals or L1 history."""

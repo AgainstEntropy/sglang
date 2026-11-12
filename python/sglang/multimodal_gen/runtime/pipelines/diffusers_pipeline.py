@@ -342,15 +342,14 @@ class DiffusersExecutionStage(PipelineStage):
         if not batch.image_path:
             return None
 
-        if isinstance(batch.image_path, list):
-            batch.image_path = batch.image_path[0]
+        image_path = batch.image_path
+        if isinstance(image_path, list):
+            image_path = image_path[0]
 
         try:
-            image = load_vision_image(batch.image_path)
-            return image.convert("RGB")
+            return load_vision_image(image_path).convert("RGB")
         except Exception as e:
-            logger.error("Failed to load image from %s: %s", batch.image_path, e)
-            return None
+            raise ValueError(f"Failed to load input image {image_path!r}: {e}") from e
 
 
 class DiffusersPipeline(ComposedPipelineBase):

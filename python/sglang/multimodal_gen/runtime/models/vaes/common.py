@@ -168,7 +168,7 @@ class ParallelTiledVAE(ABC, nn.Module, LayerwiseOffloadableModuleMixin):
             self.tile_sample_min_height // self.spatial_compression_ratio
         )
         tile_latent_min_width = (
-            self.tile_sample_stride_width // self.spatial_compression_ratio
+            self.tile_sample_min_width // self.spatial_compression_ratio
         )
         tile_latent_min_num_frames = (
             self.tile_sample_min_num_frames // self.temporal_compression_ratio

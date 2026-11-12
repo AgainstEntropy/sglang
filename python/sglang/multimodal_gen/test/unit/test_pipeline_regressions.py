@@ -143,3 +143,17 @@ def test_diffusers_pipeline_add_stage_accepts_both_argument_orders(legacy_order)
         pipeline.add_stage(stage, "diffusers_execution")
     assert pipeline._stage_name_mapping == {"diffusers_execution": stage}
     assert pipeline._stages == [stage]
+
+
+def test_diffusers_unreadable_input_image_fails_the_request(tmp_path):
+    """An image_path that could not be loaded was only logged, and the request
+    then ran as text-to-image without its reference image."""
+    stage = DiffusersExecutionStage.__new__(DiffusersExecutionStage)
+    missing = str(tmp_path / "missing.png")
+    batch = SimpleNamespace(
+        condition_image=None, pixel_values=None, image_path=[missing]
+    )
+
+    with pytest.raises(ValueError, match="Failed to load input image"):
+        stage._load_input_image(batch)
+    assert batch.image_path == [missing]

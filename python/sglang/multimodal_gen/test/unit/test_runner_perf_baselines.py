@@ -4,6 +4,7 @@ from dataclasses import replace
 import pytest
 
 from sglang.multimodal_gen.runtime.platforms import current_platform
+from sglang.multimodal_gen.test.scripts import gen_perf_baselines
 from sglang.multimodal_gen.test.server.test_server_utils import PerformanceValidator
 from sglang.multimodal_gen.test.server.testcase_configs import (
     BaselineConfig,
@@ -185,3 +186,20 @@ def test_h100_default_runner_baseline(monkeypatch, runner):
     default = BaselineConfig.load(get_perf_baseline_path("h100"))
     monkeypatch.setenv("RUNNER_NAME", runner)
     assert BaselineConfig.load(get_perf_baseline_path("h100")) == default
+
+
+def test_gen_perf_baselines_finds_cases_and_launches_them_like_ci(monkeypatch):
+    """The baseline generator read cases from a module that no longer lists them,
+    so it wrote nothing; it also dropped cfg-parallel and the case env vars."""
+    monkeypatch.setattr(current_platform, "is_npu", lambda: False)
+    monkeypatch.setattr(current_platform, "is_musa", lambda: False)
+    cases = gen_perf_baselines._all_cases()
+    assert cases
+
+    cfg_case = next(c for c in cases if c.server_args.cfg_parallel)
+    extra_args = gen_perf_baselines._build_server_extra_args(cfg_case).split()
+    assert "--enable-cfg-parallel" in extra_args
+
+    env_case = next(c for c in cases if c.server_args.env_vars)
+    env_vars = gen_perf_baselines._build_env_vars(env_case)
+    assert env_vars.items() >= env_case.server_args.env_vars.items()

@@ -108,6 +108,31 @@ class TestPrecisionVariantSelection(unittest.TestCase):
 
             self.assertEqual(checkpoint_bytes(checkpoint.name), 10)
 
+    def test_missing_shard_is_redownloaded_into_its_component_folder(self):
+        """Auto-repair fetched a component's missing shard from the repo root,
+        which 404s for Diffusers repos, so the repair never succeeded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = Path(tmpdir) / "models--org--repo/snapshots/abc"
+            component = snapshot / "transformer"
+            component.mkdir(parents=True)
+            shard = "model-00001-of-00001.safetensors"
+            (component / "model.safetensors.index.json").write_text(
+                '{"weight_map":{"weight":"%s"}}' % shard
+            )
+
+            def fake_download(*, repo_id, filename, revision):
+                (snapshot / filename).touch()
+
+            with patch(
+                f"{_LOADER_UTILS}.hf_hub_download", side_effect=fake_download
+            ) as download:
+                selected = _list_safetensors_files(str(component))
+
+        download.assert_called_once_with(
+            repo_id="org/repo", filename=f"transformer/{shard}", revision="abc"
+        )
+        self.assertEqual(selected, [str(component / shard)])
+
 
 _LOADER_UTILS = "sglang.multimodal_gen.runtime.loader.utils"
 _SNAPSHOT_DOWNLOAD = f"{_LOADER_UTILS}.snapshot_download"

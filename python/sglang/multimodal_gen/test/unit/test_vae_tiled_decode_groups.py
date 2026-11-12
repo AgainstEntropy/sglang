@@ -98,3 +98,23 @@ def test_blend_matches_per_slice_loop(dtype, dim, blend_extent):
     expected = _blend_per_slice(a, b.clone(), blend_extent, dim)
     actual = common.ParallelTiledVAE._blend(a, b.clone(), blend_extent, dim)
     assert torch.equal(actual, expected)
+
+
+def test_decode_skips_spatial_tiling_when_the_latent_fits_one_tile():
+    """The width threshold used the tile stride instead of the tile size, so a
+    latent narrower than one tile was still split into spatial tiles."""
+    config = VAEConfig(
+        arch_config=VAEArchConfig(
+            temporal_compression_ratio=1, spatial_compression_ratio=1
+        ),
+        use_tiling=True,
+        use_temporal_tiling=False,
+        tile_sample_min_height=4,
+        tile_sample_min_width=4,
+        tile_sample_stride_height=2,
+        tile_sample_stride_width=2,
+    )
+    vae = _IdentityVAE(config)
+    z = torch.zeros(1, 1, 1, 3, 3)
+    with patch.object(vae, "spatial_tiled_decode", side_effect=AssertionError("tiled")):
+        assert vae.decode(z).shape == z.shape

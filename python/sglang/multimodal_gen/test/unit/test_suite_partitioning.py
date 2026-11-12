@@ -302,3 +302,13 @@ def test_qwen_quality_variants_use_the_same_generation_request():
     for case_id in ("qwen_image_t2i_2_gpus", "qwen_image_t2i_2_gpus_extra_high"):
         assert cases[case_id].run_perf_check
         assert scenarios[case_id]["expected_e2e_ms"] > 0
+
+
+def test_npu_case_estimates_come_from_the_npu_baselines(monkeypatch):
+    """The NPU baseline path named a file that does not exist, so every NPU case
+    fell back to the default time estimate."""
+    monkeypatch.setenv("USE_NPU_CONFIGS", "1")
+    monkeypatch.syspath_prepend(str(_PLANNER_DIR))
+    parser = runpy.run_path(str(_PLANNER_DIR / "diffusion_case_parser.py"))
+    repo_root = _PLANNER_DIR.parents[3]
+    assert parser["load_baselines"](repo_root / parser["BASELINE_REL_PATH"])
