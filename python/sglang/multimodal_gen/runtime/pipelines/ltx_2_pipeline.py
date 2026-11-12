@@ -13,6 +13,9 @@ from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import (
     is_ltx23_native_variant,
     sync_ltx23_runtime_vae_markers,
 )
+from sglang.multimodal_gen.configs.pipeline_configs.ltx_2_5 import (
+    is_ltx25_dev_variant,
+)
 from sglang.multimodal_gen.configs.sample.ltx_2 import LTX23HQSamplingParams
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.loader.component_loaders.component_loader import (
@@ -341,7 +344,6 @@ class _BaseLTX2Pipeline(LoRAPipeline):
 
     # `model_index.json` points at the distilled DiT; the full / SFT weights in
     # `transformer_full/` are deliberately omitted from it.
-    _DEV_VARIANTS = frozenset({"dev", "full", "sft"})
     _DEV_TRANSFORMER_SUBFOLDER = "transformer_full"
 
     def __init__(self, model_path, server_args, required_config_modules=None, **kwargs):
@@ -367,7 +369,7 @@ class _BaseLTX2Pipeline(LoRAPipeline):
 
     @classmethod
     def _is_dev_variant(cls, server_args: ServerArgs) -> bool:
-        return str(server_args.model_variant or "").lower() in cls._DEV_VARIANTS
+        return is_ltx25_dev_variant(server_args.model_variant)
 
     @classmethod
     def _maybe_route_dev_transformer(cls, model_path: str, server_args: ServerArgs):

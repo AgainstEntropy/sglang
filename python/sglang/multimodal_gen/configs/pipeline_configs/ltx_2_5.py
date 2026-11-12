@@ -24,6 +24,14 @@ LTX25_DISTILLED_SIGMA_VALUES: tuple[float, ...] = (
     0.421875,
 )
 
+# `--model-variant` values that serve the full / SFT DiT in `transformer_full/`,
+# which is driven by a step count instead of the distilled sigma schedule.
+LTX25_DEV_VARIANTS: frozenset[str] = frozenset({"dev", "full", "sft"})
+
+
+def is_ltx25_dev_variant(model_variant: str | None) -> bool:
+    return str(model_variant or "").lower() in LTX25_DEV_VARIANTS
+
 
 @dataclasses.dataclass
 class LTX25PipelineConfig(LTX2PipelineConfig):

@@ -1,6 +1,9 @@
 import dataclasses
 from typing import Any, ClassVar
 
+from sglang.multimodal_gen.configs.pipeline_configs.ltx_2_5 import (
+    is_ltx25_dev_variant,
+)
 from sglang.multimodal_gen.configs.sample.ltx_2 import LTX2SamplingParams
 
 
@@ -55,6 +58,28 @@ class LTX25SamplingParams(LTX2SamplingParams):
         ) and not explicit & {"width", "height"}:
             self.width, self.height = self.two_stage_default_size
         super()._adjust(server_args)
+
+    def _validate_with_server_args(self, server_args: Any) -> None:
+        super()._validate_with_server_args(server_args)
+        self._reject_unpinned_step_count(server_args)
+
+    def _reject_unpinned_step_count(self, server_args: Any) -> None:
+        # LTX2SigmaPreparationStage replaces the step count with the pinned schedule.
+        pinned_sigmas = server_args.pipeline_config.default_sigmas
+        if (
+            not pinned_sigmas
+            or is_ltx25_dev_variant(server_args.model_variant)
+            or "num_inference_steps" not in self._explicit_fields
+        ):
+            return
+        if self.num_inference_steps != len(pinned_sigmas):
+            raise ValueError(
+                f"num_inference_steps={self.num_inference_steps} is not supported: "
+                f"the distilled LTX-2.5 transformer runs a fixed "
+                f"{len(pinned_sigmas)}-step sigma schedule. Omit num_inference_steps "
+                f"or set it to {len(pinned_sigmas)}; serve with --model-variant dev "
+                "to choose the step count."
+            )
 
     @classmethod
     def video_request_extra_fields(cls) -> frozenset[str]:

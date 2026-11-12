@@ -865,6 +865,9 @@ class SamplingParams:
         ):
             raise ValueError(f"video_path is not supported for task {task_type.name}")
 
+    def _validate_with_server_args(self, server_args) -> None:
+        server_args.pipeline_config.validate_sampling_params(self)
+
     def resolve_task_type(self, pipeline_config) -> ModelTaskType:
         resolver = getattr(pipeline_config, "resolve_task_type", None)
         if resolver is None:
@@ -1110,6 +1113,9 @@ class SamplingParams:
         sampling_params._adjust(server_args)
 
         sampling_params._validate_with_pipeline_config(server_args.pipeline_config)
+        # ComfyUI mode replaces the pipeline's stages, so their overrides never run.
+        if not server_args.comfyui_mode:
+            sampling_params._validate_with_server_args(server_args)
 
         return sampling_params
 

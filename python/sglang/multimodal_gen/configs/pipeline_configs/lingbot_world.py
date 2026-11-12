@@ -299,6 +299,10 @@ class LingBotWorldI2VConfig(Wan2_2_I2V_A14B_Config):
             )
         return kwargs
 
+    def check_requested_area(self, sampling_params: Any) -> None:
+        # The realtime stages resize to the requested size, with no max_area cap.
+        del sampling_params
+
     def preprocess_realtime_condition_image(self, batch, _vae_image_processor) -> bool:
         if batch.condition_image is None:
             return False

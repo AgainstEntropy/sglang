@@ -195,9 +195,10 @@ Defaults: 960×544, 121 frames, 24 fps. Video and audio are generated jointly an
 muxed into one MP4.
 
 The default DiT is distilled and runs off a fixed 8-sigma schedule rather than a
-step count, so `--num-inference-steps` and `--guidance-scale` have no effect
-here. Use [`--model-variant dev`](#4-5-the-dev-transformer) when you want
-control over either.
+step count, so any `--num-inference-steps` other than 8 is rejected (HTTP 400 on
+the API) and `--guidance-scale` has no effect here. Use
+[`--model-variant dev`](#4-5-the-dev-transformer) when you want control over
+either.
 
 ### 4.2 Image-to-video
 

@@ -223,6 +223,27 @@ class WanI2V480PConfig(WanT2V480PConfig, WanI2VCommonConfig):
         self.vae_config.load_encoder = True
         self.vae_config.load_decoder = True
 
+    def validate_sampling_params(self, sampling_params: Any) -> None:
+        super().validate_sampling_params(sampling_params)
+        self.check_requested_area(sampling_params)
+
+    def check_requested_area(self, sampling_params: Any) -> None:
+        # InputValidationStage would shrink a larger area to max_area.
+        width, height = sampling_params.width, sampling_params.height
+        if (
+            width is None
+            or height is None
+            or not sampling_params._explicit_fields & {"width", "height"}
+        ):
+            return
+        if width * height > self.max_area:
+            raise ValueError(
+                f"Requested size {width}x{height} ({width * height} pixels) exceeds "
+                f"this model's max_area of {self.max_area} pixels. The output keeps "
+                "the input image's aspect ratio; request a size whose width x height "
+                f"is at most {self.max_area}."
+            )
+
 
 @dataclass
 class WanI2V720PConfig(WanI2V480PConfig):
@@ -402,6 +423,10 @@ class Wan_Animate_2_14B_Config(WanI2V720PConfig):
         """``(1.0, None)``: ``WanAnimate2VaeAdapter.decode`` applies the latent scaling itself,
         so the DecodingStage must not de-normalize again."""
         return 1.0, None
+
+    def check_requested_area(self, sampling_params: Any) -> None:
+        # The bespoke stages treat width x height as an area budget with no max_area cap.
+        del sampling_params
 
     def supports_disaggregation(self) -> bool:
         # The stages share one WanAnimate2RequestState object (GPU tensors, a torch.Generator,

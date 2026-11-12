@@ -322,6 +322,15 @@ class PipelineConfig:
 
         del server_args
 
+    def validate_sampling_params(self, sampling_params: Any) -> None:
+        """Reject request values this pipeline would otherwise change silently.
+
+        Runs after the request's sampling params are merged and adjusted. Raise
+        ValueError; the OpenAI routes return it as HTTP 400.
+        """
+
+        del sampling_params
+
     def supports_action_endpoint(self) -> bool:
         """Whether this pipeline exposes the generic action generation API."""
 
