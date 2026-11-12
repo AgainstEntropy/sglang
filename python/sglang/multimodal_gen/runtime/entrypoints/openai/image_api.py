@@ -310,9 +310,6 @@ async def generations(
             sampling_params=sampling,
             external_trace_header=trace_headers,
         )
-        # Add diffusers_kwargs if provided
-        if request.diffusers_kwargs:
-            batch.extra["diffusers_kwargs"] = request.diffusers_kwargs
 
         save_file_path_list, result = await process_generation_batch(
             async_scheduler_client, batch

@@ -723,15 +723,8 @@ async def create_video(
             batch.report_progress = True
             batch.cancellable = True
             resources.push_async_callback(_cleanup_video_request, batch)
-            # Add diffusers_kwargs if provided.
-            if req.diffusers_kwargs:
-                batch.extra["diffusers_kwargs"] = req.diffusers_kwargs
-                if "max_sequence_length" in req.diffusers_kwargs:
-                    batch.max_sequence_length = req.diffusers_kwargs[
-                        "max_sequence_length"
-                    ]
-                if "flow_shift" in req.diffusers_kwargs:
-                    batch.flow_shift = req.diffusers_kwargs["flow_shift"]
+            if req.diffusers_kwargs and "flow_shift" in req.diffusers_kwargs:
+                batch.flow_shift = req.diffusers_kwargs["flow_shift"]
             prepare_task = asyncio.create_task(
                 asyncio.to_thread(
                     sampling_params.prepare_video_request_for_queue, batch
