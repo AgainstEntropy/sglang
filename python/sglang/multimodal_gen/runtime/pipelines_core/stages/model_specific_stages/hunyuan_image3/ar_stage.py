@@ -8,6 +8,9 @@ import torch
 from PIL import Image as PILImage
 
 from sglang.multimodal_gen import envs
+from sglang.multimodal_gen.configs.sample.hunyuan_image3 import (
+    BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR,
+)
 from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
     CacheDitConfig,
     enable_cache_on_transformer,
@@ -261,6 +264,16 @@ class HunyuanImage3AR(PipelineStage):
         self.ar_model = ar_model
         self._vae = vae
         self._processor = processor
+        # Only the Instruct remote processor has build_gen_image_info and the
+        # condition-image API; the base checkpoint's serves text-to-image only.
+        self._accepts_cond_images = hasattr(processor, "build_gen_image_info")
+        # Base build_image_info parses the same "HxW" string into the same
+        # gen_image ImageInfo, using the base checkpoint's resolution buckets.
+        self._build_gen_image_info = (
+            processor.build_gen_image_info
+            if self._accepts_cond_images
+            else processor.build_image_info
+        )
         self._scheduler = scheduler
         self._model_path = model_path
         self._vision_model = vision_model
@@ -907,7 +920,7 @@ class HunyuanImage3AR(PipelineStage):
                 pad_value=getattr(req, "output_pad_value", 0.0),
             )
         width, height = target_sizes[0]
-        image_info = self._processor.build_gen_image_info(f"{height}x{width}")
+        image_info = self._build_gen_image_info(f"{height}x{width}")
         height = image_info.image_height
         width = image_info.image_width
         token_h = image_info.token_height
@@ -1084,6 +1097,20 @@ class HunyuanImage3AR(PipelineStage):
             raw_cond_images = [raw_cond_images]
         return raw_cond_images
 
+    def _collect_batch_cond_images(self, reqs: list[Req]) -> list:
+        if not self._accepts_cond_images:
+            for req in reqs:
+                if req.is_warmup or req.extra.get("server_internal_prewarm"):
+                    # Synthetic warmup sends a reference image to every TI2I
+                    # model; warm the text-to-image path this checkpoint serves.
+                    req.condition_image = None
+                    req.image_path = None
+                    req.original_condition_image_size = None
+        per_request_raw_conds = [self._collect_raw_cond_images(req) for req in reqs]
+        if not self._accepts_cond_images and any(per_request_raw_conds):
+            raise ValueError(BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR)
+        return per_request_raw_conds
+
     @staticmethod
     def _effective_resolution(req: Req, raw_cond_images) -> tuple[int, int]:
         # Use the input-validation snapshot, not the preprocessed image.
@@ -1205,7 +1232,7 @@ class HunyuanImage3AR(PipelineStage):
         n_req = len(reqs)
         head = reqs[0]
 
-        per_request_raw_conds = [self._collect_raw_cond_images(req) for req in reqs]
+        per_request_raw_conds = self._collect_batch_cond_images(reqs)
         has_cond = any(bool(conds) for conds in per_request_raw_conds)
         (
             width,

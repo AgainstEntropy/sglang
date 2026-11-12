@@ -1,3 +1,4 @@
+import functools
 import math
 from dataclasses import dataclass, field
 
@@ -15,6 +16,26 @@ VALID_BOT_TASKS = {
     "img_ratio",
     "none",
 }
+
+BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR = (
+    "This HunyuanImage-3.0 checkpoint (the base model) supports "
+    "text-to-image only; use tencent/HunyuanImage-3.0-Instruct "
+    "for requests with reference images."
+)
+
+
+@functools.cache
+def checkpoint_accepts_reference_images(model_path: str, revision: str | None) -> bool:
+    # Same check as the AR stage: only the Instruct remote processor has
+    # build_gen_image_info and the condition-image API.
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+    processor_cls = get_class_from_dynamic_module(
+        "image_processor.HunyuanImage3ImageProcessor",
+        model_path,
+        revision=revision,
+    )
+    return hasattr(processor_cls, "build_gen_image_info")
 
 
 @dataclass
@@ -69,7 +90,25 @@ class HunyuanImage3SamplingParams(SamplingParams):
             )
             self.bot_task = "image"
         self._validate_output_geometry()
+        self._reject_reference_images_on_base_checkpoint(server_args)
         super()._adjust(server_args)
+
+    def _reject_reference_images_on_base_checkpoint(self, server_args) -> None:
+        # Reject before dispatch so the client gets a 400, not a worker failure.
+        if not self.image_path:
+            return
+        try:
+            accepts = checkpoint_accepts_reference_images(
+                server_args.model_path, server_args.revision
+            )
+        except Exception as e:
+            # The AR stage still rejects the request if the probe cannot run.
+            logger.warning(
+                "Could not inspect the HunyuanImage-3 image processor: %s", e
+            )
+            return
+        if not accepts:
+            raise ValueError(BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR)
 
     def _validate_output_geometry(self) -> None:
         if self.output_size_mode not in {"aspect_ratio", "exact_size"}:

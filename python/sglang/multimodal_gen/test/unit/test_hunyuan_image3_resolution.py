@@ -1,19 +1,39 @@
 """Resolution-contract tests for HunyuanImage-3 image generation and editing."""
 
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
 import torch
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from PIL import Image
 
 from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.configs.pipeline_configs.hunyuan_image3 import (
     HunyuanImage3PipelineConfig,
 )
+from sglang.multimodal_gen.configs.sample import (
+    hunyuan_image3 as hunyuan_image3_sampling,
+)
+from sglang.multimodal_gen.configs.sample.hunyuan_image3 import (
+    BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR,
+)
 from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
+from sglang.multimodal_gen.runtime.entrypoints.openai import image_api
+from sglang.multimodal_gen.runtime.entrypoints.openai import utils as openai_utils
+from sglang.multimodal_gen.runtime.entrypoints.openai.utils import (
+    build_sampling_params,
+)
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import OutputBatch, Req
+from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineStage
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
 from sglang.multimodal_gen.runtime.pipelines_core.stages.input_validation import (
     InputValidationStage,
+)
+from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.hunyuan_image3 import (
+    ar_stage,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.hunyuan_image3.ar_stage import (
     HunyuanImage3AR,
@@ -25,6 +45,10 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.h
     apply_hunyuan_image3_spatial_plan,
     build_hunyuan_image3_output_geometry,
     resolve_hunyuan_image3_output_resolution,
+)
+from sglang.multimodal_gen.runtime.scheduler_client import async_scheduler_client
+from sglang.multimodal_gen.runtime.warmup_request_builder import (
+    should_include_warmup_image,
 )
 
 
@@ -90,9 +114,6 @@ def test_generation_saves_requested_ratio_before_selecting_native_bucket(monkeyp
         token_width=native_size[0] // 16,
         token_height=native_size[1] // 16,
     )
-    processor = SimpleNamespace(
-        build_gen_image_info=lambda image_size: image_info,
-    )
     request = SimpleNamespace(
         width=requested_size[0],
         height=requested_size[1],
@@ -103,7 +124,7 @@ def test_generation_saves_requested_ratio_before_selecting_native_bucket(monkeyp
         extra={},
     )
     stage = object.__new__(HunyuanImage3AR)
-    stage._processor = processor
+    stage._build_gen_image_info = lambda image_size: image_info
     monkeypatch.setattr(stage, "_rebuild_image_info", lambda info: info)
 
     width, height, *_ = stage._resolve_generation_params([request], [None])
@@ -121,6 +142,214 @@ def test_generation_saves_requested_ratio_before_selecting_native_bucket(monkeyp
         "pad_value": 0.0,
         "native_bucket_size": [1216, 832],
     }
+
+
+class _BaseCheckpointProcessor:
+    """Public API of the base checkpoint's remote image_processor.py."""
+
+    def build_image_info(self, image_size):
+        return _native_bucket_info(image_size)
+
+
+class _InstructCheckpointProcessor:
+    """Public API of the Instruct checkpoint's remote image_processor.py."""
+
+    def build_gen_image_info(
+        self, image_size, add_guidance_token=False, add_timestep_r_token=False
+    ):
+        return _native_bucket_info(image_size)
+
+
+def _native_bucket_info(image_size: str):
+    assert image_size == "700x1000"
+    return SimpleNamespace(
+        image_width=1216, image_height=832, token_width=76, token_height=52
+    )
+
+
+def _make_ar_stage(monkeypatch, processor) -> HunyuanImage3AR:
+    monkeypatch.setattr(PipelineStage, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        ar_stage, "HunyuanImage3TokenizerWrapper", lambda tokenizer: tokenizer
+    )
+    stage = HunyuanImage3AR(
+        ar_model=None,
+        vae=None,
+        tokenizer=None,
+        processor=processor,
+        scheduler=None,
+        model_path="",
+        vision_model=None,
+        vision_aligner=None,
+    )
+    monkeypatch.setattr(stage, "_rebuild_image_info", lambda info: info)
+    return stage
+
+
+def _ar_request(condition_image=None, *, is_warmup=False):
+    return SimpleNamespace(
+        width=1000,
+        height=700,
+        sampling_params=SimpleNamespace(_explicit_fields={"width", "height"}),
+        original_condition_image_size=None,
+        condition_image=condition_image,
+        image_path=None,
+        guidance_scale=2.5,
+        num_inference_steps=50,
+        is_warmup=is_warmup,
+        extra={},
+    )
+
+
+def _synthetic_warmup_request():
+    # Shaped like build_warmup_reqs output after input validation: no explicit
+    # size, and the 64x64 warmup image as the reference.
+    request = _ar_request(is_warmup=True)
+    request.sampling_params._explicit_fields = set()
+    request.image_path = ["warmup_image.png"]
+    request.condition_image = Image.new("RGB", (64, 64))
+    request.original_condition_image_size = (64, 64)
+    return request
+
+
+@pytest.mark.parametrize(
+    "processor", [_BaseCheckpointProcessor(), _InstructCheckpointProcessor()]
+)
+def test_generation_resolves_native_bucket_with_base_and_instruct_processors(
+    monkeypatch, processor
+):
+    """The base checkpoint's processor has no build_gen_image_info; every base
+    request must not fail on it, and Instruct (no build_image_info) must not regress."""
+    stage = _make_ar_stage(monkeypatch, processor)
+    request = _ar_request()
+
+    width, height, token_h, token_w, *_ = stage._resolve_generation_params(
+        [request], [None]
+    )
+
+    assert (width, height, token_w, token_h) == (1216, 832, 76, 52)
+    assert (request.width, request.height) == (1216, 832)
+
+
+def test_base_checkpoint_rejects_reference_images(monkeypatch):
+    """The base processor has no condition-image API, so an edit request must
+    fail with a clear error, not an AttributeError mid-pipeline."""
+    stage = _make_ar_stage(monkeypatch, _BaseCheckpointProcessor())
+    request = _ar_request(condition_image=Image.new("RGB", (64, 64)))
+
+    with pytest.raises(ValueError, match="HunyuanImage-3.0-Instruct"):
+        stage._forward_batched([request])
+
+
+@pytest.mark.parametrize("warmup_marker", ["is_warmup", "server_internal_prewarm"])
+def test_base_checkpoint_warms_text_to_image_despite_synthetic_reference_image(
+    monkeypatch, warmup_marker
+):
+    """Server warmup sends a synthetic reference image to TI2I models; on the
+    base checkpoint it must warm text-to-image instead of failing startup."""
+    server_args = SimpleNamespace(pipeline_config=HunyuanImage3PipelineConfig())
+    assert should_include_warmup_image(server_args, server_based_warmup=True)
+    stage = _make_ar_stage(monkeypatch, _BaseCheckpointProcessor())
+    request = _synthetic_warmup_request()
+    if warmup_marker == "server_internal_prewarm":
+        request.is_warmup = False
+        request.extra["server_internal_prewarm"] = True
+
+    raw_conds = stage._collect_batch_cond_images([request])
+    width, height, *_ = stage._resolve_generation_params([request], raw_conds)
+
+    assert raw_conds == [None]
+    assert (width, height) == (1216, 832)
+
+
+def test_instruct_checkpoint_keeps_synthetic_warmup_reference_image(monkeypatch):
+    stage = _make_ar_stage(monkeypatch, _InstructCheckpointProcessor())
+    request = _synthetic_warmup_request()
+
+    raw_conds = stage._collect_batch_cond_images([request])
+
+    assert raw_conds == [[request.condition_image]]
+
+
+def _hunyuan_image3_server_args():
+    return SimpleNamespace(
+        model_path="tencent/HunyuanImage-3.0",
+        revision=None,
+        pipeline_class_name="HunyuanImage3Pipeline",
+        pipeline_config=HunyuanImage3PipelineConfig(),
+        output_path=None,
+        input_save_path=None,
+        backend="auto",
+        model_id=None,
+        comfyui_mode=False,
+        attention_backend_config={},
+        num_gpus=1,
+        enable_trace=False,
+    )
+
+
+def test_base_checkpoint_edit_request_is_a_client_error_before_dispatch(monkeypatch):
+    """The AR stage's rejection runs in the worker, where it becomes a 500;
+    the HTTP process must reject the reference image with a 400 first."""
+    server_args = _hunyuan_image3_server_args()
+    for module in (image_api, openai_utils):
+        monkeypatch.setattr(module, "get_global_server_args", lambda: server_args)
+    probed = []
+
+    def base_processor(model_path, revision):
+        probed.append((model_path, revision))
+        return False
+
+    monkeypatch.setattr(
+        hunyuan_image3_sampling, "checkpoint_accepts_reference_images", base_processor
+    )
+    forward = AsyncMock(return_value=OutputBatch(error="must not be dispatched"))
+    monkeypatch.setattr(async_scheduler_client, "forward", forward)
+    app = FastAPI()
+    app.include_router(image_api.router)
+    image = BytesIO()
+    Image.new("RGB", (64, 64)).save(image, format="PNG")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/images/edits",
+            data={"prompt": "p"},
+            files={"image": ("reference.png", image.getvalue(), "image/png")},
+        )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == BASE_CHECKPOINT_REFERENCE_IMAGE_ERROR
+    assert probed == [("tencent/HunyuanImage-3.0", None)]
+    forward.assert_not_awaited()
+
+
+def test_reference_image_check_only_rejects_the_base_checkpoint(monkeypatch, tmp_path):
+    server_args = _hunyuan_image3_server_args()
+    monkeypatch.setattr(openai_utils, "get_global_server_args", lambda: server_args)
+    accepts = {"tencent/HunyuanImage-3.0-Instruct": True}
+
+    def probe(model_path, revision):
+        if model_path not in accepts:
+            raise OSError("processor unavailable")
+        return accepts[model_path]
+
+    monkeypatch.setattr(
+        hunyuan_image3_sampling, "checkpoint_accepts_reference_images", probe
+    )
+    reference = str(tmp_path / "reference.png")
+    Image.new("RGB", (64, 64)).save(reference)
+
+    server_args.model_path = "tencent/HunyuanImage-3.0-Instruct"
+    params = build_sampling_params("instruct", prompt="p", image_path=[reference])
+    assert params.image_path == [reference]
+    # If the probe cannot run, the request falls through to the AR stage.
+    server_args.model_path = "unreachable/HunyuanImage-3.0"
+    params = build_sampling_params("unknown", prompt="p", image_path=[reference])
+    assert params.image_path == [reference]
+    # Text-to-image requests never probe the checkpoint.
+    accepts.clear()
+    params = build_sampling_params("t2i", prompt="p")
+    assert not params.image_path
 
 
 def test_native_crop_is_maximum_area_within_pixel_rounding_and_preserves_pixels():
