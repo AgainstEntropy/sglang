@@ -45,7 +45,7 @@ class MLP(nn.Module):
         self.fc_in = ColumnParallelLinear(
             input_dim,
             mlp_hidden_dim,
-            bias=True,
+            bias=bias,
             skip_bias_add=False,
             gather_output=False,
             quant_config=quant_config,
@@ -58,7 +58,7 @@ class MLP(nn.Module):
         self.fc_out = RowParallelLinear(
             mlp_hidden_dim,
             output_dim,
-            bias=True,
+            bias=bias,
             input_is_parallel=True,
             quant_config=quant_config,
             prefix=add_prefix("fc_out", prefix),
