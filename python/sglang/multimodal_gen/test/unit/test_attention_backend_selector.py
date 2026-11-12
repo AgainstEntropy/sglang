@@ -213,7 +213,7 @@ class TestAttentionBackendFallback(unittest.TestCase):
         with component_attn_backend_context_manager(
             AttentionBackendEnum.TORCH_SDPA,
             component_name="text_encoder",
-            require_component_backend_selection=False,
+            require_backend_selection=False,
         ):
             pass
 

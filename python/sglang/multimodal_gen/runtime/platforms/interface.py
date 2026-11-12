@@ -224,10 +224,6 @@ class Platform:
         return cls._enum == PlatformEnum.ROCM
 
     @lru_cache(maxsize=1)
-    def is_hpu(self) -> bool:
-        return hasattr(torch, "hpu") and torch.hpu.is_available()
-
-    @lru_cache(maxsize=1)
     def is_xpu(self) -> bool:
         return (
             not self.is_out_of_tree()

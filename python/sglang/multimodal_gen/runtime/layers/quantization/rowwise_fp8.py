@@ -39,9 +39,6 @@ class RowwiseFp8Config(QuantizationConfig):
         format_version: str,
         fp8_layers: frozenset[str],
         input_scale_layers: frozenset[str] = frozenset(),
-        num_linear_layers: int = 0,
-        num_bf16_layers: int = 0,
-        num_tensors: int = 0,
     ) -> None:
         super().__init__()
         self.format_version = format_version

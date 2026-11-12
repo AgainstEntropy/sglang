@@ -9,7 +9,6 @@ from typing import Type
 
 import torch
 import torch.nn as nn
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
 from sglang.kernels.ops.diffusion import (
@@ -47,6 +46,9 @@ from sglang.multimodal_gen.runtime.layers.attention.backends.attention_backend i
     AttentionImpl,
     wrap_attention_impl_forward,
 )
+from sglang.multimodal_gen.runtime.layers.attention.backends.sdpa import (
+    torch_default_sdpa_backends,
+)
 from sglang.multimodal_gen.runtime.layers.attention.backends.skip_softmax import (
     get_request_skip_softmax_params,
 )
@@ -80,13 +82,6 @@ from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import 
     eager_on_graph,
     is_in_breakable_cuda_graph,
 )
-
-_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS = [
-    SDPBackend.CUDNN_ATTENTION,
-    SDPBackend.FLASH_ATTENTION,
-    SDPBackend.EFFICIENT_ATTENTION,
-    SDPBackend.MATH,
-]
 
 # Set ``SGLANG_VARLEN_FA=0`` to disable the varlen FA fast path in
 # USPAttention masked branch and fall back to SDPA.
@@ -795,7 +790,7 @@ class LocalAttention(nn.Module):
                 v_ = v_.repeat_interleave(repeat_factor, dim=1)
 
             sdpa_context = (
-                sdpa_kernel(_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS, set_priority=True)
+                torch_default_sdpa_backends()
                 if self.allow_cudnn_sdp and q_.device.type == "cuda"
                 else nullcontext()
             )
@@ -1080,13 +1075,11 @@ class USPAttention(nn.Module):
             )
 
         # Tail-pad meta alone (sp_shard.tail_attn_meta; mask derivable from the
-        # pad span) also opts into the masked SP branch. gap_* = legacy alias.
+        # pad span) also opts into the masked SP branch.
         meta_pad_start = meta_pad_end = None
         if attn_mask_meta is not None:
-            meta_pad_start = attn_mask_meta.get(
-                "pad_start", attn_mask_meta.get("gap_start")
-            )
-            meta_pad_end = attn_mask_meta.get("pad_end", attn_mask_meta.get("gap_end"))
+            meta_pad_start = attn_mask_meta.get("pad_start")
+            meta_pad_end = attn_mask_meta.get("pad_end")
         meta_only_pad = (
             attn_mask is None
             and meta_pad_start is not None
@@ -1289,7 +1282,7 @@ class USPAttention(nn.Module):
                 v_ = v.transpose(1, 2)
                 mask = prepare_sdpa_mask(attn_mask, dtype=q_.dtype, device=q_.device)
                 sdpa_context = (
-                    sdpa_kernel(_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS, set_priority=True)
+                    torch_default_sdpa_backends()
                     if self.allow_cudnn_sdp and q_.device.type == "cuda"
                     else nullcontext()
                 )
@@ -1470,7 +1463,7 @@ class USPAttention(nn.Module):
                     gathered_mask, dtype=q_.dtype, device=q_.device
                 )
                 sdpa_context = (
-                    sdpa_kernel(_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS, set_priority=True)
+                    torch_default_sdpa_backends()
                     if self.allow_cudnn_sdp and q_.device.type == "cuda"
                     else nullcontext()
                 )
@@ -1978,7 +1971,7 @@ class USPAttention(nn.Module):
             v_ = v_.repeat_interleave(repeat_factor, dim=1)
 
         sdpa_context = (
-            sdpa_kernel(_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS, set_priority=True)
+            torch_default_sdpa_backends()
             if self.allow_cudnn_sdp and q_.device.type == "cuda"
             else nullcontext()
         )
@@ -2217,7 +2210,7 @@ class USPAttention(nn.Module):
         v_ = v.transpose(1, 2)
         mask = prepare_sdpa_mask(attn_mask, dtype=q_.dtype, device=q_.device)
         sdpa_context = (
-            sdpa_kernel(_PYTORCH_DEFAULT_CUDA_SDP_BACKENDS, set_priority=True)
+            torch_default_sdpa_backends()
             if self.allow_cudnn_sdp and q_.device.type == "cuda"
             else nullcontext()
         )

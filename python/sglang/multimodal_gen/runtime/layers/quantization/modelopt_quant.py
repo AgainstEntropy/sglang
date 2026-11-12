@@ -244,24 +244,6 @@ class ModelOptQuantConfig(QuantizationConfig):
     def get_config_filenames(cls) -> List[str]:
         return ["hf_quant_config.json"]
 
-    @classmethod
-    def override_quantization_method(cls, hf_quant_config, user_quant) -> Optional[str]:
-        if hf_quant_config is None:
-            return None
-
-        quant_algo = (
-            hf_quant_config.get("quant_algo")
-            or hf_quant_config.get("quantization", {}).get("quant_algo")
-            or ""
-        ).upper()
-        if user_quant in {"modelopt", "modelopt_fp8"} and "FP8" in quant_algo:
-            return "modelopt_fp8"
-        if user_quant in {"modelopt", "modelopt_fp4"} and (
-            "NVFP4" in quant_algo or "FP4" in quant_algo
-        ):
-            return "modelopt_fp4"
-        return None
-
     def is_layer_excluded(self, prefix: str) -> bool:
         for pattern in self.exclude_modules:
             regex_str = re.escape(pattern).replace(r"\*", r".*")

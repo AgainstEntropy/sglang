@@ -500,20 +500,13 @@ def component_attn_backend_context_manager(
     backend_by_role: dict[AttentionRole, AttentionBackendEnum] | None = None,
     allow_global_backend_fallback: bool = False,
     require_backend_selection: bool | None = None,
-    require_component_backend_selection: bool | None = None,
 ) -> Generator[None, None, None]:
     if attn_backend is None and component_name is None and not backend_by_role:
         yield
         return
 
     if require_backend_selection is None:
-        require_backend_selection = (
-            require_component_backend_selection
-            if require_component_backend_selection is not None
-            else attn_backend is not None
-        )
-    elif require_component_backend_selection is not None:
-        raise ValueError("Specify only one component backend selection requirement")
+        require_backend_selection = attn_backend is not None
 
     if backend_by_role:
         # Announce the configured overrides up front; the summary logged on exit

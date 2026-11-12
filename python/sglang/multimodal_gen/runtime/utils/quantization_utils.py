@@ -595,7 +595,6 @@ def get_quant_config(
     component_model_path: str,
     packed_modules_mapping: Dict[str, List[str]] = {},
     reverse_param_names_mapping: Dict[str, List[str]] = {},
-    remap_prefix: Dict[str, str] | None = None,
     quant_ignore_remap: Optional[Dict[str, str]] = None,
 ) -> QuantizationConfig:
     quant_cfg = find_quant_modelslim_config(model_config, component_model_path)

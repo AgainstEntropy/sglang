@@ -67,14 +67,6 @@ class NPUPlatformBase(Platform):
         return torch.no_grad()
 
     @classmethod
-    def is_full_nvlink(cls, physical_device_ids: list[int]) -> bool:
-        logger.exception(
-            "NVLink detection not possible, as context support was"
-            " not found. Assuming no NVLink available."
-        )
-        return False
-
-    @classmethod
     def get_available_gpu_memory(
         cls,
         device_id: int | None = None,

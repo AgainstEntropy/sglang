@@ -39,7 +39,6 @@ from sglang.multimodal_gen.runtime.models.parameter import (
     PerTensorScaleParameter,
 )
 from sglang.multimodal_gen.runtime.platforms import current_platform
-from sglang.multimodal_gen.runtime.platforms.aiter import USE_AITER
 from sglang.multimodal_gen.runtime.utils.common import (
     cpu_has_amx_support,
     get_bool_env_var,
@@ -80,11 +79,6 @@ _is_cuda = current_platform.is_cuda()
 _is_cpu_amx_available = cpu_has_amx_support()
 _is_cpu = current_platform.is_cpu()
 _is_fp8_fnuz = is_fp8_fnuz()
-_use_hip_int4 = get_bool_env_var("SGLANG_INT4_WEIGHT") and _is_hip
-
-if USE_AITER or _use_hip_int4:
-    pass
-
 
 logger = logging.getLogger(__name__)
 

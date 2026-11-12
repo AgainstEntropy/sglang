@@ -85,10 +85,6 @@ class MusaPlatformBase(Platform):
         raise NotImplementedError
 
     @classmethod
-    def is_full_mtlink(cls, device_ids: list[int]) -> bool:
-        raise NotImplementedError
-
-    @classmethod
     def log_warnings(cls) -> None:
         pass
 
@@ -267,32 +263,6 @@ class MtmlMusaPlatform(MusaPlatformBase):
         return int(pymtml.nvmlDeviceGetMemoryInfo(handle).total)
 
     @classmethod
-    @with_mtml_context
-    def is_full_mtlink(cls, physical_device_ids: list[int]) -> bool:
-        """
-        query if the set of gpus are fully connected by mtlink (1 hop)
-        """
-        handles = [pymtml.nvmlDeviceGetHandleByIndex(i) for i in physical_device_ids]
-        for i, handle in enumerate(handles):
-            for j, peer_handle in enumerate(handles):
-                if i < j:
-                    try:
-                        p2p_status = pymtml.nvmlDeviceGetP2PStatus(
-                            handle,
-                            peer_handle,
-                            pymtml.NVML_P2P_CAPS_INDEX_NVLINK,
-                        )
-                        if p2p_status != pymtml.NVML_P2P_STATUS_OK:
-                            return False
-                    except pymtml.NVMLError:
-                        logger.exception(
-                            "MTLink detection failed. This is normal if"
-                            " your machine has no MTLink equipped."
-                        )
-                        return False
-        return True
-
-    @classmethod
     def _get_physical_device_name(cls, device_id: int = 0) -> str:
         handle = pymtml.nvmlDeviceGetHandleByIndex(device_id)
         return str(pymtml.nvmlDeviceGetName(handle))
@@ -330,14 +300,6 @@ class NonMtmlMusaPlatform(MusaPlatformBase):
     def get_device_total_memory(cls, device_id: int = 0) -> int:
         device_props = torch.cuda.get_device_properties(device_id)
         return int(device_props.total_memory)
-
-    @classmethod
-    def is_full_mtlink(cls, physical_device_ids: list[int]) -> bool:
-        logger.error(
-            "MTLink detection not possible, as context support was"
-            " not found. Assuming no MTLink available."
-        )
-        return False
 
 
 # Autodetect either MTML-enabled or non-MTML platform
