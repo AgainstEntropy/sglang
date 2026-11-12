@@ -2,6 +2,16 @@ from dataclasses import replace
 from pathlib import Path
 
 from sglang.multimodal_gen.runtime.platforms import current_platform
+from sglang.multimodal_gen.test.server.common.synthetic_inputs import (
+    HOUSE_BLUR_CONTROL,
+    HOUSE_BLUR_CONTROL_FPS,
+    HOUSE_BLUR_CONTROL_FRAMES,
+    HOUSE_EDIT_INPUT,
+    HOUSE_I2V_INPUT,
+    ROAD_CONTROL_FPS,
+    ROAD_CONTROL_FRAMES,
+    ROAD_CONTROLS,
+)
 from sglang.multimodal_gen.test.server.testcase_configs import (
     MODELOPT_FLUX2_FP8_TRANSFORMER,
     MODELOPT_FLUX2_NVFP4_WEIGHTS,
@@ -22,6 +32,7 @@ from sglang.multimodal_gen.test.server.testcase_configs import (
     IDEOGRAM4_CI_sampling_params,
     JOY_ECHO_T2V_CI_sampling_params,
     LINGBOT_VIDEO_T2V_CI_sampling_params,
+    LINGBOT_WORLD_2_REALTIME_sampling_params,
     LONGLIVE2_I2V_CI_sampling_params,
     LONGLIVE2_T2V_CI_sampling_params,
     MINIMAX_H3_IMAGE_EDIT_sampling_params,
@@ -970,6 +981,210 @@ MINIMAX_H3_FOUR_GPU_H100_CASES = [
     ),
 ]
 
+_COSMOS3_ROAD_VIEW_PROMPTS = {
+    "camera_front_wide_120fov": (
+        "A car drives along a straight two-lane road through green fields on a "
+        "sunny day, seen from the front camera."
+    ),
+    "camera_cross_left_120fov": (
+        "A car drives along a straight two-lane road through green fields on a "
+        "sunny day, seen from the left side camera."
+    ),
+}
+_COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS = DiffusionSamplingParams(
+    # Captions travel per camera; the harness only requires a top-level prompt.
+    prompt=_COSMOS3_ROAD_VIEW_PROMPTS["camera_front_wide_120fov"],
+    output_size="832x480",
+    num_frames=ROAD_CONTROL_FRAMES,
+    extras={
+        "seed": 0,
+        "fps": ROAD_CONTROL_FPS,
+        "multiview": {
+            "views": [
+                {
+                    "camera_key": camera_key,
+                    "control_path": str(control_path),
+                    "prompt": _COSMOS3_ROAD_VIEW_PROMPTS[camera_key],
+                }
+                for camera_key, control_path in ROAD_CONTROLS.items()
+            ]
+        },
+    },
+)
+
+# One case per catalog family that no other lane loads, run nightly on one B200
+# (test_server_nightly_b200.py). No b200 scenario or golden exists for them yet.
+NIGHTLY_ONE_GPU_B200_CASES = [
+    DiffusionTestCase(
+        "moss_image_base_t2i",
+        DiffusionServerArgs(
+            model_path="OpenMOSS-Team/MOSS-Image-Base", modality="image"
+        ),
+        DiffusionSamplingParams(
+            prompt="A red fox sitting in a snowy forest at dawn, soft golden light",
+            output_size="1024x1024",
+            extras={"seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "longcat_image_t2i",
+        DiffusionServerArgs(
+            model_path="meituan-longcat/LongCat-Image", modality="image"
+        ),
+        DiffusionSamplingParams(
+            prompt="A quiet bookshop on a rainy evening, warm light on the wet street",
+            output_size="1024x1024",
+            extras={"seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "ernie_image_turbo_t2i",
+        DiffusionServerArgs(model_path="baidu/ERNIE-Image-Turbo", modality="image"),
+        DiffusionSamplingParams(
+            prompt="A cinematic photo of a quiet lakeside cabin at sunrise",
+            output_size="1280x720",
+            # The model card's Turbo recipe; the registry defaults are the base model's.
+            extras={"num_inference_steps": 8, "guidance_scale": 1.0, "seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "firered_image_edit_1_1_ti2i",
+        DiffusionServerArgs(
+            model_path="FireRedTeam/FireRed-Image-Edit-1.1", modality="image"
+        ),
+        DiffusionSamplingParams(
+            prompt=(
+                "Make it a snowy winter scene: cover the ground and the roof with "
+                "snow and make the sky grey."
+            ),
+            image_path=str(HOUSE_EDIT_INPUT),
+            output_size="1024x1024",
+            extras={"seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "sensenova_u1_5_t2i",
+        DiffusionServerArgs(
+            model_path="sensenova/SenseNova-U1.5-8B-MoT", modality="image"
+        ),
+        DiffusionSamplingParams(
+            prompt="A cinematic mountain lake at sunrise, realistic photography.",
+            output_size="2048x2048",
+            extras={"num_inference_steps": 50, "guidance_scale": 4.0, "seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "hidream_o1_image_t2i",
+        DiffusionServerArgs(model_path="HiDream-ai/HiDream-O1-Image", modality="image"),
+        DiffusionSamplingParams(
+            prompt="A cat is sitting next to a sign that says 'HiDream-O1'",
+            output_size="2048x2048",
+            extras={"num_inference_steps": 50, "guidance_scale": 5.0, "seed": 42},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "cosmos3_sim_bimanual_i2v",
+        DiffusionServerArgs(
+            model_path="nvidia/Cosmos3-Nano-Sim-Bimanual", modality="video"
+        ),
+        DiffusionSamplingParams(
+            prompt=(
+                "A small red house in a green field under a blue sky, the camera "
+                "slowly moves forward."
+            ),
+            image_path=str(HOUSE_I2V_INPUT),
+            output_size="832x480",
+            num_frames=33,
+            fps=24,
+            extras={"seed": 0},
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+    ),
+    DiffusionTestCase(
+        "cosmos3_sim_transfer_blur_v2v",
+        DiffusionServerArgs(
+            model_path="nvidia/Cosmos3-Nano-Sim-Transfer", modality="video"
+        ),
+        DiffusionSamplingParams(
+            prompt="A small red house in a green field under a clear blue sky.",
+            output_size="832x480",
+            num_frames=HOUSE_BLUR_CONTROL_FRAMES,
+            extras={
+                "seed": 0,
+                "fps": HOUSE_BLUR_CONTROL_FPS,
+                "control_path": str(HOUSE_BLUR_CONTROL),
+                "control_hint": "blur",
+            },
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+        run_t2v_input_reference_check=False,
+    ),
+    DiffusionTestCase(
+        "cosmos3_transfer_auto_multiview",
+        DiffusionServerArgs(
+            model_path="nvidia/Cosmos3-Nano-Transfer-Auto", modality="video"
+        ),
+        replace(
+            _COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS,
+            # 12 of the checkpoint's 35 steps, to bound the nightly time.
+            extras={
+                **_COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS.extras,
+                "num_inference_steps": 12,
+            },
+        ),
+        require_perf_baseline=False,
+        run_consistency_check=False,
+        run_t2v_input_reference_check=False,
+    ),
+    DiffusionTestCase(
+        "cosmos3_sim_auto_multiview",
+        DiffusionServerArgs(
+            model_path="nvidia/Cosmos3-Nano-Sim-Auto", modality="video"
+        ),
+        _COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS,
+        require_perf_baseline=False,
+        run_consistency_check=False,
+        run_t2v_input_reference_check=False,
+    ),
+    # The cookbook's 8-GPU Ulysses recipe on one GPU; peaks near 90 GB, past an H100.
+    DiffusionTestCase(
+        "lingbot_world_2_realtime",
+        DiffusionServerArgs(
+            model_path="robbyant/lingbot-world-v2-14b-causal-fast-diffusers",
+            modality="video",
+            num_gpus=1,
+            extras=[
+                "--pipeline-class-name LingBotWorldCausalDMDPipeline "
+                "--dit-cpu-offload false --text-encoder-cpu-offload false "
+                "--enable-torch-compile false"
+            ],
+            env_vars={
+                "SGLANG_LINGBOT_LAZY_VAE_ENCODE_BLACK_FRAMES": "60",
+                "SGLANG_LINGBOT_ENABLE_INTERACTIVE_KV_WINDOW": "true",
+            },
+        ),
+        LINGBOT_WORLD_2_REALTIME_sampling_params,
+        require_perf_baseline=False,
+        run_consistency_check=False,
+        run_models_api_check=False,
+        run_t2v_input_reference_check=False,
+    ),
+]
+
 TWO_GPU_CASES = [
     DiffusionTestCase(
         "minimax_h3_t2va_2gpu_h100",
@@ -1638,9 +1853,10 @@ FILE_SUITES = {
         "test_server_ming_image.py",
         "test_server_qwen_image21.py",
     ],
-    # Kandinsky 6 Pro-distill peaks at ~80 GB, past an H100's memory.
+    # Kandinsky 6 Pro-distill and LingBot-World 2.0 peak at 80-90 GB, past an H100.
     "nightly-1-gpu-b200": [
         "test_server_kandinsky6.py",
+        "test_server_nightly_b200.py",
     ],
     "nightly-4-gpu-h100": [
         "test_server_4_gpu_h100.py",

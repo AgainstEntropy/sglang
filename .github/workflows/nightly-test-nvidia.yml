@@ -96,7 +96,7 @@ jobs:
           - { runner_config: 8-gpu-b300, run_timeout: '360', job_timeout: '420' }
           # Diffusion e2e suites, run through their test/registered bridges.
           - { runner_config: diffusion-1-gpu-h100, run_timeout: '90', job_timeout: '150' }
-          - { runner_config: diffusion-1-gpu-b200, run_timeout: '60', job_timeout: '120' }
+          - { runner_config: diffusion-1-gpu-b200, run_timeout: '150', job_timeout: '210' }
           - { runner_config: diffusion-4-gpu-h100, run_timeout: '60', job_timeout: '120' }
     uses: ./.github/workflows/_pr-test-stage.yml
     with:

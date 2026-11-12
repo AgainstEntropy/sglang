@@ -545,12 +545,9 @@ class DiffusionServerBase:
                 pytest.fail(
                     f"{case.id}: realtime request performance record is missing"
                 )
-            if scenario is None:
-                pytest.fail(
-                    f"Testcase '{case.id}' not found in {get_perf_baseline_update_path()}"
-                )
+            # A missing scenario is reported below, after baseline generation.
             validator = PerformanceValidator(
-                scenario=scenario,
+                scenario=scenario or ScenarioConfig({}, {}, 0, 0, 0),
                 tolerances=BASELINE_CONFIG.tolerances,
                 step_fractions=BASELINE_CONFIG.step_fractions,
             )
@@ -565,7 +562,25 @@ class DiffusionServerBase:
             _PENDING_BASELINE_DUMPS.setdefault(case.id, []).append(summary)
             return
 
+        def validate_chunk_limits() -> None:
+            validate_realtime_perf_stats(
+                case.id,
+                chunk_stats,
+                case.sampling_params.realtime_perf_thresholds,
+                ignore_initial_chunks=(
+                    case.sampling_params.realtime_perf_ignore_initial_chunks
+                ),
+            )
+
         if scenario is None:
+            self._dump_baseline_for_testcase(case, summary, missing_scenario=True)
+            if not case.require_perf_baseline:
+                logger.warning(
+                    f"[performance] {case.id}: no scenario in "
+                    f"{get_perf_baseline_update_path()}; checking chunk limits only"
+                )
+                validate_chunk_limits()
+                return
             pytest.fail(
                 f"Testcase '{case.id}' not found in {get_perf_baseline_update_path()}"
             )
@@ -577,14 +592,7 @@ class DiffusionServerBase:
             )
         validator.validate_e2e(summary)
         validator.validate_load(summary)
-        validate_realtime_perf_stats(
-            case.id,
-            chunk_stats,
-            case.sampling_params.realtime_perf_thresholds,
-            ignore_initial_chunks=(
-                case.sampling_params.realtime_perf_ignore_initial_chunks
-            ),
-        )
+        validate_chunk_limits()
         if not check_memory:
             return
 

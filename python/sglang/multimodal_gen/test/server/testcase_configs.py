@@ -531,6 +531,16 @@ REALTIME_MODEL_sampling_params = DiffusionSamplingParams(
     },
 )
 
+# The session above minus the sink and KV-cache overrides; LingBot-World 2.0
+# runs with the interactive KV window, as its cookbook recipe does.
+LINGBOT_WORLD_2_REALTIME_sampling_params = replace(
+    REALTIME_MODEL_sampling_params,
+    extras={
+        **_REALTIME_MODEL_COMMON_EXTRAS,
+        "condition_inputs": REALTIME_MODEL_sampling_params.extras["condition_inputs"],
+    },
+)
+
 
 PI05_ACTION_CI_sampling_params = DiffusionSamplingParams(
     prompt="pick up the blue block",

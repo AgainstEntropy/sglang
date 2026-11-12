@@ -158,6 +158,19 @@ html.dark table tbody tr:nth-child(even) td,
   text-decoration: underline;
 }
 
+.sgd-model-entry-experimental {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 7px;
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.14);
+  color: rgb(146, 64, 14);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
 @media (max-width: 620px) {
   .sgd-model-entry {
     grid-template-columns: minmax(0, 1fr);
@@ -908,6 +921,13 @@ html.dark .sgd-model-entry-note,
 html.dark .sgd-model-entry-link,
 [data-theme="dark"] .sgd-model-entry-link {
   color: rgb(251, 146, 60);
+}
+
+html.dark .sgd-model-entry-experimental,
+[data-theme="dark"] .sgd-model-entry-experimental {
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.12);
+  color: rgb(252, 211, 77);
 }
 
 html.dark .sgd-chip,

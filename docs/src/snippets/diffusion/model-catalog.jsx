@@ -19,6 +19,7 @@ export const DiffusionModelCatalog = ({ category }) => {
       name: "HunyuanImage-3.0",
       modelIds: ["tencent/HunyuanImage-3.0", "tencent/HunyuanImage-3.0-Instruct"],
       cookbook: "/cookbook/diffusion/Tencent/HunyuanImage3",
+      experimental: "No CI lane loads these checkpoints yet.",
     },
     {
       name: "Anima",
@@ -81,6 +82,7 @@ export const DiffusionModelCatalog = ({ category }) => {
       name: "Krea-2",
       modelIds: ["krea/Krea-2"],
       cookbook: "/cookbook/diffusion/Krea/Krea-2",
+      experimental: "Gated checkpoint; no CI lane loads it.",
     },
     {
       name: "LongCat-Image",
@@ -101,6 +103,7 @@ export const DiffusionModelCatalog = ({ category }) => {
         "stabilityai/stable-diffusion-3.5-large",
         "stabilityai/stable-diffusion-3.5-large-diffusers",
       ],
+      experimental: "Gated checkpoints; no CI lane loads them.",
     },
     {
       name: "SANA",
@@ -263,11 +266,13 @@ export const DiffusionModelCatalog = ({ category }) => {
       name: "FastH3 Omni",
       modelIds: ["FastVideo/FastVideo-FastH3-Omni-8-Step-V1"],
       cookbook: "/cookbook/diffusion/MiniMax/MiniMax-H3#fasth3-omni-ref2va-8-step-pdd",
+      experimental: "No CI lane loads this checkpoint yet.",
     },
     {
       name: "Pika H3 Flex",
       modelIds: ["Pika-Labs/Pika-H3-Flex"],
       cookbook: "/cookbook/diffusion/MiniMax/MiniMax-H3#pika-h3-flex-six-step-adapters",
+      experimental: "No CI lane loads this checkpoint yet.",
     },
     {
       name: "VDN-H3",
@@ -308,6 +313,7 @@ export const DiffusionModelCatalog = ({ category }) => {
         "BestWishYsh/Helios-Mid",
         "BestWishYsh/Helios-Distilled",
       ],
+      experimental: "No CI lane loads these checkpoints; the Helios cases are disabled as flaky.",
     },
   ],
   world: [
@@ -402,6 +408,9 @@ export const DiffusionModelCatalog = ({ category }) => {
         <article key={model.name} className="sgd-model-entry" role="listitem">
           <div className="sgd-model-entry-meta">
             <h3>{model.name}</h3>
+            {model.experimental && (
+              <span className="sgd-model-entry-experimental">Experimental</span>
+            )}
             {model.cookbook && (
               <a
                 className="sgd-model-entry-link"
@@ -419,6 +428,9 @@ export const DiffusionModelCatalog = ({ category }) => {
               </div>
             ))}
             {model.note && <p className="sgd-model-entry-note">{model.note}</p>}
+            {model.experimental && (
+              <p className="sgd-model-entry-note">Experimental: {model.experimental}</p>
+            )}
           </div>
         </article>
       ))}

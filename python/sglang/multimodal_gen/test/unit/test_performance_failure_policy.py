@@ -121,6 +121,60 @@ def test_missing_scenario_fails_only_when_a_baseline_is_required(
     assert len(server._perf_results) == 1
 
 
+@pytest.mark.parametrize("chunk_total_ms", [100.0, 9000.0])
+@pytest.mark.parametrize("require_perf_baseline", [True, False])
+def test_realtime_missing_scenario_still_checks_chunk_limits(
+    monkeypatch, require_perf_baseline, chunk_total_ms
+):
+    """A realtime case may opt out of the baseline, but never out of its chunk limits."""
+    monkeypatch.setenv("SGLANG_GEN_BASELINE", "0")
+    case = DiffusionTestCase(
+        "realtime_no_scenario_for_this_platform",
+        DiffusionServerArgs(model_path="test", modality="video"),
+        DiffusionSamplingParams(
+            prompt="test",
+            realtime_num_chunks=2,
+            realtime_perf_thresholds={"p95_chunk_total_ms": 5000.0},
+        ),
+        run_perf_check=False,
+        run_consistency_check=False,
+        require_perf_baseline=require_perf_baseline,
+    )
+    monkeypatch.delitem(common.BASELINE_CONFIG.scenarios, case.id, raising=False)
+    monkeypatch.setattr(common, "pop_realtime_e2e_ms", lambda case_id: 1000.0)
+    chunk_stats = [
+        common.RealtimeChunkStats(
+            chunk_index=index,
+            request_id=f"chunk-{index}",
+            content_type="raw",
+            num_frames=9,
+            raw_bytes=0,
+            ws_payload_bytes=0,
+            request_prepare_ms=0.0,
+            scheduler_forward_ms=0.0,
+            raw_payload_build_ms=0.0,
+            raw_write_ms=0.0,
+            ws_write_ms=0.0,
+            chunk_total_ms=chunk_total_ms,
+        )
+        for index in range(2)
+    ]
+    server = common.DiffusionServerBase()
+    server._perf_results = []
+    validate = lambda: server._validate_realtime_performance(
+        SimpleNamespace(load_time_ms=100), case, chunk_stats
+    )
+    if require_perf_baseline:
+        with pytest.raises(pytest.fail.Exception, match="not found in"):
+            validate()
+    elif chunk_total_ms > 5000.0:
+        with pytest.raises(pytest.fail.Exception, match="p95_chunk_total_ms"):
+            validate()
+    else:
+        validate()
+    assert len(server._perf_results) == 1
+
+
 @pytest.mark.parametrize(
     "output",
     [
