@@ -322,6 +322,15 @@ class PipelineConfig:
 
         del server_args
 
+    def validate_sampling_params(self, sampling_params: Any) -> None:
+        """Reject request values this pipeline would otherwise change silently.
+
+        Runs after the request's sampling params are merged and adjusted. Raise
+        ValueError; the OpenAI routes return it as HTTP 400.
+        """
+
+        del sampling_params
+
     def supports_action_endpoint(self) -> bool:
         """Whether this pipeline exposes the generic action generation API."""
 
@@ -1136,6 +1145,10 @@ class PipelineConfig:
                 # selected. A registered explicit config also replaces the generic
                 # Diffusers fallback used for package roots without model_index.json.
                 if pipeline_class_name:
+                    from sglang.multimodal_gen.configs.pipeline_configs.diffusers_generic import (
+                        DiffusersGenericPipelineConfig,
+                    )
+
                     explicit_config_classes = get_pipeline_config_classes(
                         pipeline_class_name
                     )
@@ -1147,8 +1160,10 @@ class PipelineConfig:
                             and explicit_config_cls is not pipeline_config_cls
                             and (
                                 issubclass(explicit_config_cls, pipeline_config_cls)
-                                or pipeline_config_cls.__name__
-                                == "DiffusersGenericPipelineConfig"
+                                # Includes the task-type subclasses of the fallback.
+                                or issubclass(
+                                    pipeline_config_cls, DiffusersGenericPipelineConfig
+                                )
                             )
                         ):
                             logger.info(

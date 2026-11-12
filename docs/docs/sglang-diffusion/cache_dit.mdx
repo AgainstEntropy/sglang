@@ -74,6 +74,10 @@ Cache-DiT supports loading acceleration configs from a custom YAML file. For
 diffusers pipelines (`diffusers` backend), pass the YAML/JSON path via `--cache-dit-config`. This
 flow requires cache-dit >= 1.2.0 (`cache_dit.load_configs`).
 
+The diffusers backend rejects `SGLANG_CACHE_DIT_ENABLED=true` at startup, and
+rejects the per-request `enable_cache_dit`, `cache_dit_params`,
+`enable_teacache` and `enable_spectrum` fields with a 400.
+
 ### Single GPU inference
 
 Define a `cache.yaml` file that contains:
@@ -194,9 +198,23 @@ Define a parallelism only config yaml `parallel.yaml` file that contains:
 parallelism_config:
   ulysses_size: auto
   attention_backend: native
+  ulysses_anything: true
 ```
 
 Then, apply the distributed inference acceleration config from yaml. `ulysses_size: auto` means that cache-dit will auto detect the `world_size` as the ulysses_size. Otherwise, you should manually set it as specific int number, e.g, 4.
+
+`ulysses_anything: true` enables Ulysses Anything Attention (UAA), which lets cache-dit split sequence lengths
+and attention head counts that `ulysses_size` does not divide. Without it, plain Ulysses splits every sharded tensor evenly and
+fails each request with `Tensor size along dimension to be sharded must be divisible by mesh size` unless every
+sharded length divides `ulysses_size`. For Qwen-Image, cache-dit shards the prompt embeddings as well as the image
+tokens, and the prompt embeddings are as long as the prompt, so plain Ulysses fails on most prompts. Drop
+`ulysses_anything` only when every sharded length is a fixed multiple of `ulysses_size` (for example, models that
+pad the prompt to a fixed length, at a resolution whose latent token count divides `ulysses_size`). UAA cannot be
+combined with `ring_size` > 1.
+
+cache-dit spans all `--num-gpus` GPUs, so `ulysses_size x ring_size x tp_size` must equal `--num-gpus` (with
+`auto`, `--num-gpus` must be a multiple of the other sizes), and `--dp-size` cannot be combined with
+`parallelism_config`.
 
 Then apply the distributed config with: (Note: please add `--num-gpus N` to specify the number of gpus for distributed inference)
 
@@ -208,6 +226,10 @@ sglang generate \
   --cache-dit-config parallel.yaml \
   --prompt "A futuristic cityscape at sunset"
 ```
+
+The examples below use plain Ulysses to show one option each, so they need evenly divisible sequence lengths.
+For models such as Qwen-Image, add `ulysses_anything: true` to them (all but the 3D example, which uses
+`ring_size: 2`).
 
 - 2D Parallelism
 
@@ -233,17 +255,6 @@ parallelism_config:
   attention_backend: native
 ```
 Then, apply the 3D parallelism config from yaml. Here `ulysses_size: 2`, `ring_size: 2`, `tp_size: 2` means using ulysses parallelism with size 2, ring parallelism with size 2 and tensor parallelism with size 2.
-
-- Ulysses Anything Attention
-
-To enable Ulysses Anything Attention, you can define a parallelism config yaml `parallel_uaa.yaml` file that contains:
-
-```yaml Config
-parallelism_config:
-  ulysses_size: auto
-  attention_backend: native
-  ulysses_anything: true
-```
 
 - Ulysses FP8 Communication
 
@@ -298,8 +309,17 @@ cache_config:
 parallelism_config:
   ulysses_size: auto
   attention_backend: native
+  ulysses_anything: true
   extra_parallel_modules: ["text_encoder", "vae"]
 ```
+
+<Warning>
+Caching combined with `parallelism_config` does not work for Qwen-Image with cache-dit 1.5.1: the server
+starts, then every request fails with `The size of tensor a (1024) must match the size of tensor b (4096) at
+non-singleton dimension 1` (the sizes depend on the resolution). cache-dit's own Ulysses split shards the input
+of the first transformer block, but DBCache only detects diffusers' split hook, so it subtracts the full input
+from the sharded output.
+</Warning>
 
 Then, apply the hybrid cache and parallel acceleration config from yaml.
 
@@ -322,12 +342,14 @@ attention_backend: "flash" # '_flash_3' for Hopper
 
 ### Quantization
 
-You can also specify the quantization config in the yaml file, required `torchao>=0.16.0`. For example, define a yaml file `quantize.yaml` that contains:
+You can also specify the quantization config in the yaml file. It needs torchao (`pip install "torchao>=0.17.0"`),
+which the default SGLang image does not include. For example, define a yaml file `quantize.yaml` that contains:
 
 ```yaml Config
 quantize_config: # quantization configuration for transformer modules
-  # float8 (DQ), float8_weight_only, float8_blockwise, int8 (DQ), int8_weight_only, etc.
-  quant_type: "float8"
+  # float8_per_row, float8_per_tensor, float8_per_block, float8_weight_only,
+  # int8_per_row, int8_per_tensor, int8_weight_only, int4_weight_only, nvfp4, nvfp4_weight_only
+  quant_type: "float8_per_row"
   # layers to exclude from quantization (transformer). layers that contains any of the
   # keywords in the exclude_layers list will be excluded from quantization. This is useful
   # for some sensitive layers that are not robust to quantization, e.g., embedding layers.
@@ -443,15 +465,21 @@ cache_config:
 parallelism_config:
   ulysses_size: auto
   attention_backend: native
+  ulysses_anything: true
   extra_parallel_modules: ["text_encoder", "vae"]
 quantize_config:
-  quant_type: "float8"
+  quant_type: "float8_per_row"
   exclude_layers:
     - "embedder"
     - "embed"
   verbose: false
 ```
 Then, apply the combined cache, parallelism and quantization config from yaml. Please also enable torch.compile for better performance if you are using quantization.
+
+<Warning>
+This config needs torchao and, like `hybrid.yaml`, fails every Qwen-Image request with cache-dit 1.5.1 (see
+[Hybrid Cache and Parallelism](#hybrid-cache-and-parallelism)).
+</Warning>
 
 ## Advanced Configuration
 
@@ -615,10 +643,10 @@ sglang generate --model-path black-forest-labs/FLUX.1-dev \
     --prompt "A curious raccoon in a forest"
 ```
 
-On the diffusers backend, enable DMD from the yaml config instead
-(`enable_dmd: true` in `cache_config`, see
-[Diffusers Backend](#diffusers-backend)); DMD can also be set per request via
-`cache_dit_params: {"enable_dmd": true}`.
+On native pipelines, DMD can also be set per request via
+`cache_dit_params: {"enable_dmd": true}`. On the diffusers backend, enable DMD
+from the yaml config instead (`enable_dmd: true` in `cache_config`, see
+[Diffusers Backend](#diffusers-backend)).
 
 ### Combined Configuration Example
 

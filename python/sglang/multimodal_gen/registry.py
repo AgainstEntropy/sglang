@@ -24,6 +24,8 @@ from typing import (
     Union,
 )
 
+from huggingface_hub.utils import HFValidationError, validate_repo_id
+
 if TYPE_CHECKING:
     from sglang.multimodal_gen.runtime.server_args import Backend
 
@@ -592,6 +594,30 @@ def _get_diffusers_model_info(
     )
 
 
+def _check_model_path_exists(model_path: str) -> None:
+    if os.path.exists(model_path):
+        return
+    try:
+        validate_repo_id(model_path)
+    except HFValidationError as e:
+        raise FileNotFoundError(
+            f"Model path {model_path!r} does not exist and is not a "
+            "Hugging Face repo id; check --model-path"
+        ) from e
+
+
+def _get_auto_diffusers_fallback_model_info(
+    model_path: str, model_id: Optional[str]
+) -> ModelInfo:
+    try:
+        return _get_diffusers_model_info(model_path=model_path, model_id=model_id)
+    except ValueError:
+        # A missing local path that no registered name or detector matches
+        # fails here reading model_index.json as a repo id.
+        _check_model_path_exists(model_path)
+        raise
+
+
 @lru_cache(maxsize=1)
 def get_model_info(
     model_path: str,
@@ -641,16 +667,19 @@ def get_model_info(
     # 1. Discover all available pipeline classes and cache them
     _ensure_registry_initialized()
 
-    # Detect quantized models and fallback to diffusers
+    # Detect quantized models and fall back to diffusers; an explicit
+    # --backend sglang keeps the native path.
     is_quantized = any(q in model_path.lower() for q in ["-4bit", "-awq", "-gptq"])
-    if is_quantized and backend != Backend.DIFFUSERS:
+    if is_quantized and backend == Backend.AUTO:
         logger.info(
             "Detected a quantized model format ('%s'). "
             "The native sglang-diffusion engine currently only supports BF16/FP16. "
             "Falling back to diffusers backend.",
             model_path,
         )
-        return _get_diffusers_model_info(model_path=model_path, model_id=model_id)
+        return _get_auto_diffusers_fallback_model_info(
+            model_path=model_path, model_id=model_id
+        )
 
     # 2. Get pipeline class - check non-diffusers models first
     pipeline_class_name = get_non_diffusers_pipeline_name(model_path)
@@ -667,7 +696,7 @@ def get_model_info(
             logger.error(f"Could not read model config for '{model_path}': {e}")
             if backend == Backend.AUTO:
                 logger.info("Falling back to diffusers backend")
-                return _get_diffusers_model_info(
+                return _get_auto_diffusers_fallback_model_info(
                     model_path=model_path, model_id=model_id
                 )
             return None

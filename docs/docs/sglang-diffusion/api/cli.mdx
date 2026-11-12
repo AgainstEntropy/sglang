@@ -654,3 +654,27 @@ sglang generate \
 ```
 
 For pipeline-specific arguments not exposed in the CLI, pass `diffusers_kwargs` in a config file.
+
+### Unsupported Options
+
+The diffusers backend loads and runs one unmodified diffusers pipeline per GPU. Startup fails, naming each flag, when
+any of these native-only options is set to a non-default value. The check also applies when `--backend auto` falls
+back to diffusers.
+
+- Quantization and weights: `--quantization`, `--quantization-ignored-layers`, `--<component>-quantization`,
+  `--transformer-weights-path`, `--<component>-path`, `--<component>-weights-path`. Use a pre-quantized diffusers
+  checkpoint or `quantization_config` in the pipeline config.
+- Parallelism: `--num-gpus` above `--dp-size`, `--tp-size`, `--sp-degree`, `--ulysses-degree`, `--ring-degree`,
+  `--kv-gather-degree`, `--enable-cfg-parallel`, `--cfg-parallel-degree`, `--use-fsdp-inference`. To split one
+  pipeline across `--num-gpus N`, set `parallelism_config` in `--cache-dit-config` (see
+  [Cache-DiT](/docs/sglang-diffusion/cache_dit)); to serve N replicas, use `--dp-size N --num-gpus N`.
+- Offload: `--dit-layerwise-offload`, `--layerwise-offload-components`, and `--component-residency` other than
+  `all=resident` or `all=component-offload`.
+- Attention: SGLang backend names such as `fa` or `sage_attn` (`aiter` is also a diffusers name and is passed through),
+  `--attention-backend-config`, `--enable-attention-backend-autotune`. A diffusers backend name that the pipeline
+  cannot apply also fails startup.
+- Others: `--lora-path`, `--enable-breakable-cuda-graph`, `--direct-gpu-weight-loading`,
+  `--component-direct-gpu-weight-loading.<component>`, `SGLANG_CACHE_DIT_ENABLED=true` (use `--cache-dit-config`).
+
+Requests that set `enable_teacache`, `enable_spectrum`, `enable_cache_dit`, `cache_dit_params`,
+`attention_backend_override` or `skip_softmax_params` get a 400.

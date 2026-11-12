@@ -19,6 +19,10 @@ from diffusers import DiffusionPipeline
 from PIL import Image
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
+from sglang.multimodal_gen.configs.pipeline_configs.diffusers_generic import (
+    DIFFUSERS_SHARED_ATTENTION_BACKEND_NAMES,
+    sglang_attention_backend_names,
+)
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
     get_global_component_residency_manager,
@@ -40,10 +44,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.executors.sync_executor import
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import PipelineStage
-from sglang.multimodal_gen.runtime.platforms import (
-    AttentionBackendEnum,
-    current_platform,
-)
+from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import maybe_download_model
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
@@ -549,15 +550,18 @@ class DiffusersPipeline(ComposedPipelineBase):
         Available backends: flash, _flash_3_hub, sage, xformers, native, etc.
         """
         backend = server_args.attention_backend
+        user_set = backend is not None and server_args.is_arg_explicitly_set(
+            "attention_backend"
+        )
         if backend is None:
             return
 
         backend = backend.lower()
-        sglang_backends = {e.name.lower() for e in AttentionBackendEnum} | {
-            "fa3",
-            "fa4",
-        }
-        if backend in sglang_backends:
+        # User-set SGLang-only names fail DiffusersGenericPipelineConfig
+        # validation; automatic defaults (e.g. aiter on ROCm) are skipped here.
+        if backend in sglang_attention_backend_names() and not (
+            user_set and backend in DIFFUSERS_SHARED_ATTENTION_BACKEND_NAMES
+        ):
             logger.debug(
                 "Skipping diffusers attention backend '%s' because it matches a "
                 "SGLang backend name. Use diffusers backend names when running "
@@ -566,21 +570,35 @@ class DiffusersPipeline(ComposedPipelineBase):
             )
             return
 
+        applied = False
         for component_name in ["transformer", "unet"]:
             component = getattr(pipe, component_name, None)
             if component is not None and hasattr(component, "set_attention_backend"):
                 try:
                     component.set_attention_backend(backend)
+                    applied = True
                     logger.info(
                         "Set attention backend '%s' on %s", backend, component_name
                     )
                 except Exception as e:
+                    if user_set:
+                        raise ValueError(
+                            f"--attention-backend {backend} failed on "
+                            f"{component_name}: {e}. Use a diffusers attention "
+                            "backend name that this pipeline supports"
+                        ) from e
                     logger.warning(
                         "Failed to set attention backend '%s' on %s: %s",
                         backend,
                         component_name,
                         e,
                     )
+        if user_set and not applied:
+            raise ValueError(
+                f"--attention-backend {backend}: {type(pipe).__name__} has no "
+                "transformer or unet that supports set_attention_backend; "
+                "remove --attention-backend"
+            )
 
     def _apply_cache_dit(
         self, pipe: DiffusionPipeline, server_args: ServerArgs

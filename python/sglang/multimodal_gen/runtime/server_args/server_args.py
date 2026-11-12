@@ -4213,7 +4213,8 @@ class ServerArgs(DisaggServerArgsMixin):
         deployment_config = self.pipeline_config.get_model_deployment_config()
         if not deployment_config.supports_cfg_parallel:
             raise ValueError(
-                f"{type(self.pipeline_config).__name__} does not support CFG parallelism"
+                f"{type(self.pipeline_config).__name__} does not support CFG parallelism; "
+                "remove --enable-cfg-parallel and --cfg-parallel-degree"
             )
         if self.num_gpus == 1:
             raise ValueError(
