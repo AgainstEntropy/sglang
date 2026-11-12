@@ -6,10 +6,17 @@ import json
 import pytest
 
 from sglang.multimodal_gen import registry
+from sglang.multimodal_gen.configs.pipeline_configs.qwen_image import (
+    QwenImageEditPlus_2511_PipelineConfig,
+)
+from sglang.multimodal_gen.configs.pipeline_configs.qwen_image21 import (
+    QwenImage21PipelineConfig,
+)
 from sglang.multimodal_gen.configs.pipeline_configs.wan import (
     Wan_Animate_2_14B_Config,
     Wan_Animate_2_14B_Distilled_Config,
 )
+from sglang.multimodal_gen.configs.sample.qwenimage21 import QwenImage21SamplingParams
 from sglang.multimodal_gen.runtime.models import registry as model_registry
 
 
@@ -120,6 +127,30 @@ def test_model_id_short_name_selects_the_variant_for_a_neutral_directory():
         "/models/ckpt-7f3a", model_id="Wan2.2-Animate-2-14B-Distilled-Diffusers"
     )
     assert info.pipeline_config_cls is Wan_Animate_2_14B_Distilled_Config
+
+
+# A local directory name that drifts from the repo id (Qwen-Image-2_1, ModelScope's
+# Qwen-Image-2___1) must not route the checkpoint to a sibling family's config.
+
+
+@pytest.mark.parametrize("name", ["Qwen-Image-2_1", "Qwen-Image-2___1"])
+def test_name_match_defers_to_the_pipeline_class_config(tmp_path, name):
+    # Both names short-name-match "Qwen/Qwen-Image", whose config lacks sample_sigmas.
+    path = _checkpoint_dir(tmp_path, name=name, index_class="QwenImage21Pipeline")
+    info = registry._get_config_info(path)
+    assert info.pipeline_config_cls is QwenImage21PipelineConfig
+    assert info.sampling_param_cls is QwenImage21SamplingParams
+
+
+def test_name_match_keeps_a_variant_config_of_the_pipeline_class(tmp_path):
+    # The 2511 config subclasses the one QwenImageEditPlusPipeline declares.
+    path = _checkpoint_dir(
+        tmp_path, name="Qwen-Image-Edit-2511", index_class="QwenImageEditPlusPipeline"
+    )
+    assert (
+        registry._get_config_info(path).pipeline_config_cls
+        is QwenImageEditPlus_2511_PipelineConfig
+    )
 
 
 @pytest.mark.parametrize("entry", ["Model", '[Model, "Model"]', '(Model, "Model")'])

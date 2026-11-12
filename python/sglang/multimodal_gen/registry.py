@@ -441,6 +441,37 @@ def has_registered_diffusion_model_path(model_path: str) -> bool:
     )
 
 
+def _refine_by_pipeline_class(
+    model_path: str, config_info: Optional[ConfigInfo]
+) -> Optional[ConfigInfo]:
+    """Prefer the config the local checkpoint's pipeline class declares when the
+    name match picked an incompatible one."""
+    # A short-name match can land on a sibling family: "Qwen/Qwen-Image" matches
+    # a directory named Qwen-Image-2_1 or ModelScope's Qwen-Image-2___1.
+    pipeline_class_name = load_dict(os.path.join(model_path, "model_index.json")).get(
+        "_class_name"
+    )
+    declared = _PIPELINE_CONFIG_REGISTRY.get(pipeline_class_name)
+    if (
+        config_info is None
+        or declared is None
+        or issubclass(config_info.pipeline_config_cls, declared[0])
+    ):
+        return config_info
+    pipeline_config_cls, sampling_param_cls = declared
+    logger.info(
+        "Using %s declared by pipeline class %s instead of name-matched %s for '%s'",
+        pipeline_config_cls.__name__,
+        pipeline_class_name,
+        config_info.pipeline_config_cls.__name__,
+        model_path,
+    )
+    return ConfigInfo(
+        sampling_param_cls=sampling_param_cls,
+        pipeline_config_cls=pipeline_config_cls,
+    )
+
+
 @lru_cache(maxsize=1)
 def _get_config_info(
     model_path: str, model_id: Optional[str] = None
@@ -483,7 +514,8 @@ def _get_config_info(
     # 1/2/2b. Exact, short-name, or local HuggingFace cache path match
     registered_hf_id = _match_registered_hf_path(model_path)
     if registered_hf_id is not None:
-        return _CONFIG_REGISTRY.get(_MODEL_HF_PATH_TO_NAME[registered_hf_id])
+        config_info = _CONFIG_REGISTRY.get(_MODEL_HF_PATH_TO_NAME[registered_hf_id])
+        return _refine_by_pipeline_class(model_path, config_info)
 
     # 3. Use detectors
     pipeline_name = get_non_diffusers_pipeline_name(model_path)
