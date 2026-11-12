@@ -735,6 +735,37 @@ def test_component_uses_exact_encoder_precision():
     ]
 
 
+@torch.no_grad()
+def test_encode_text_applies_per_call_tokenizer_overrides():
+    """Per-call truncation/padding passed to encode_text must reach the tokenizer."""
+    config = make_text_config()
+    tokenize = config.tokenize_prompt
+    seen = []
+
+    def recording_tokenize(texts, tokenizer, tok_kwargs):
+        seen.append(dict(tok_kwargs))
+        return tokenize(texts, tokenizer, tok_kwargs)
+
+    config.tokenize_prompt = recording_tokenize
+    with patch(_GLOBAL_ARGS_PATCH, return_value=MagicMock()):
+        stage = TextEncodingStage(
+            text_encoders=[FullHiddenStateEncoder().eval()], tokenizers=[object()]
+        )
+    stage._begin_text_encoder_use = MagicMock()
+    stage._text_encode_dp_group = MagicMock(return_value=None)
+
+    stage.encode_text(
+        "hello",
+        make_server_args(pipeline_config=config),
+        device="cpu",
+        padding="max_length",
+        truncation=False,
+    )
+
+    assert seen[-1]["padding"] == "max_length"
+    assert seen[-1]["truncation"] is False
+
+
 def test_negative_text_encoding_warmup_does_not_seed_a_private_cache():
     stage = DummyTextEncodingStage()
     get_negative_embedding_twice(stage, make_server_args(), make_req(is_warmup=True))
