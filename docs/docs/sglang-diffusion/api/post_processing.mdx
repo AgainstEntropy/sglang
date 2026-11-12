@@ -139,11 +139,11 @@ are downloaded automatically on first use and cached for subsequent runs.
     </tr>
     <tr>
       <td><code>--upscaling-scale &#123;SCALE&#125;</code></td>
-      <td>Desired upscaling factor (default: <code>4</code>). The 4× model is used internally; if a different scale is requested, a bicubic resize is applied after the network output.</td>
+      <td>Desired upscaling factor (default: <code>4</code>). With the default weights, scale 2 or 4 runs the native <code>RealESRGAN_x2.pth</code> / <code>RealESRGAN_x4.pth</code> model; any other scale runs the 4× model and applies a bicubic resize after the network output. A custom model runs at its native scale and is resized the same way.</td>
     </tr>
     <tr>
       <td><code>--upscaling-model-path &#123;PATH&#125;</code></td>
-      <td>Local <code>.pth</code> file, HuggingFace repo ID, or <code>repo_id:filename</code> for Real-ESRGAN weights (default: <code>ai-forever/Real-ESRGAN</code> with <code>RealESRGAN_x4.pth</code>, downloaded automatically). Use the <code>repo_id:filename</code> format to specify a custom weight file from a HuggingFace repo (e.g. <code>my-org/my-esrgan:weights.pth</code>).</td>
+      <td>Local <code>.pth</code> file, HuggingFace repo ID, or <code>repo_id:filename</code> for Real-ESRGAN weights (default: <code>ai-forever/Real-ESRGAN</code> with <code>RealESRGAN_x2.pth</code> for scale 2 and <code>RealESRGAN_x4.pth</code> otherwise, downloaded automatically). Use the <code>repo_id:filename</code> format to specify a custom weight file from a HuggingFace repo (e.g. <code>my-org/my-esrgan:weights.pth</code>).</td>
     </tr>
   </tbody>
 </table>
@@ -170,12 +170,12 @@ point `--upscaling-model-path` at a valid `.pth` file:
   <tbody>
     <tr>
       <td><strong>RRDBNet</strong></td>
-      <td><code>RealESRGAN_x4plus.pth</code></td>
+      <td><code>RealESRGAN_x4.pth</code> *(default)*, <code>RealESRGAN_x2.pth</code>, <code>RealESRGAN_x4plus.pth</code></td>
       <td>Heavier model with higher quality; best for photos</td>
     </tr>
     <tr>
       <td><strong>SRVGGNetCompact</strong></td>
-      <td><code>RealESRGAN_x4.pth</code> *(default)*, <code>realesr-animevideov3.pth</code>, <code>realesr-general-x4v3.pth</code></td>
+      <td><code>realesr-animevideov3.pth</code>, <code>realesr-general-x4v3.pth</code></td>
       <td>Lightweight model; faster inference, good for video</td>
     </tr>
   </tbody>
@@ -183,7 +183,8 @@ point `--upscaling-model-path` at a valid `.pth` file:
 
 The default weight file is
 [`ai-forever/Real-ESRGAN`](https://huggingface.co/ai-forever/Real-ESRGAN) with
-`RealESRGAN_x4.pth` (SRVGGNetCompact, 4× native scale).
+`RealESRGAN_x4.pth` (RRDBNet, 4× native scale); `--upscaling-scale 2` uses
+`RealESRGAN_x2.pth` (RRDBNet, 2× native scale) instead.
 
 Other super-resolution models (e.g., SwinIR, HAT, BSRGAN) are **not supported**
 — only Real-ESRGAN checkpoints using the two architectures above are

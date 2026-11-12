@@ -36,7 +36,7 @@ description: "Configure SGLang diffusion behavior with environment variables."
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_ATTENTION_CONFIG</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>not set</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Path to attention backend configuration file (JSON/YAML)</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Path to the Sliding Tile Attention (STA) mask-strategy JSON file. Required, and read, only when <code>--attention-backend-config</code> sets <code>STA_mode=STA_INFERENCE</code>. General attention backend options go in <code>--attention-backend-config</code>.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_STAGE_LOGGING</code></td>
@@ -46,17 +46,32 @@ description: "Configure SGLang diffusion behavior with environment variables."
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_TORCH_PROFILER_DIR</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>not set</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Directory for torch profiler traces (absolute path). Enables profiling when set</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Output directory for torch profiler traces. It does not enable profiling; use <code>--profile</code> or the request field <code>profile</code>. If unset, <code>SGLANG_TORCH_PROFILER_DIR</code> is used, then <code>./logs</code>.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_CACHE_ROOT</code></td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>~/.cache/sgl_diffusion</code></td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Root directory for cache files</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>$XDG_CACHE_HOME/sgl_diffusion</code> (<code>~/.cache/sgl_diffusion</code>)</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Root directory for diffusion cache files: the torch.compile cache, LoRA merge cache, VAE decode-dtype store and materialized overlay models. Host-spill weight copies use <code>SGLANG_DIFFUSION_HOST_SPILL_DIR</code> instead.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_HOST_SPILL_DIR</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>~/.cache/sglang/diffusion/host_spill</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Directory for file-backed copies of transformed weights (fused QKV, reordered rows), kept reclaimable by the OS and reused across restarts with the same checkpoint. Not under <code>SGLANG_DIFFUSION_CACHE_ROOT</code>.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_DISABLE_HOST_SPILL</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>false</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Keep transformed weights in anonymous host memory instead of <code>SGLANG_DIFFUSION_HOST_SPILL_DIR</code>.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_IPC_A2A</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>true</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Enable CUDA-IPC all-to-all for eligible same-host, peer-accessible TP1 + two-rank Ulysses groups. Unsupported topology falls back to NCCL; set <code>0</code> to force NCCL.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_IPC_A2A_MULTI</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>false</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Experimental copy-engine all-to-all for same-host Ulysses groups of any size. Falls back to NCCL when a rank lacks peer-to-peer access or the platform is not CUDA.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_IPC_A2A_TIMEOUT_MS</code></td>
@@ -92,6 +107,61 @@ description: "Configure SGLang diffusion behavior with environment variables."
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_KITCHEN_INT8_MIN_SPLIT_N</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>8192</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Minimum output features before <code>convrot_int8</code> (<code>comfy_kitchen</code> backend) splits large-M GEMMs when <code>SGLANG_KITCHEN_INT8_MAX_ROWS</code> is positive. Narrow outputs stay as a single call.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_NCCL_SO_PATH</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>not set</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Path to the NCCL (or RCCL) shared library used by the diffusion PyNccl communicator. Set it when the library fails to load.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_CFG_GATE_STEP</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>1.0</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Server default for the <code>cfg_gate_step</code> sampling parameter, in <code>[0, 1]</code>: the fraction of denoising steps that run both CFG branches before the last conditional-minus-unconditional residual is reused. Lossy below <code>1.0</code>; <code>1.0</code> disables it. Has no effect with <code>--enable-cfg-parallel</code>.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_DISABLE_AUTO_RESIDENCY</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>false</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Disable the warmup-calibrated residency promotion that <code>--performance-mode auto</code> runs with server warmup, keeping the rest of the auto performance policy.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_DISABLE_STAGE_NAN_CHECK</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>false</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Skip the <code>torch.isnan</code> scan that stage validators run on each request (a full-size kernel plus a host sync). Shape and type checks still run.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_SYNC_STAGE_PROFILING</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>0</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Set <code>1</code> to synchronize the device at stage boundaries so per-stage timings measure device time. Adds overhead; use for diagnostics only.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_ENABLE_FUSED_QKNORM_ROPE</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>1</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Fused QK RMSNorm + RoPE kernels in diffusion DiTs. Only <code>0</code>, <code>false</code>, <code>off</code> or <code>no</code> disable them.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_VAE_CHANNELS_LAST_3D</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>auto</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Store VAE Conv3d weights in <code>channels_last_3d</code> layout on CUDA, ROCm, CPU and XPU. <code>auto</code> enables it for Qwen-Image, Wan, Cosmos3 and single-GPU LTX-2 (multi-GPU Wan and Cosmos3 convert only the decoder); a boolean value forces it on or off for the whole VAE.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_WAN_TEXT_PADDING</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>max</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Wan UMT5 prompt padding: <code>max</code> pads every prompt to 512 tokens; <code>longest</code> encodes only the real tokens; <code>bucket</code> rounds up to a multiple of 64. <code>longest</code> and <code>bucket</code> are faster but not bit-identical to <code>max</code>. Other values raise an error.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_WAN_ANIMATE_2_FP8_REFERENCE_KV</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>false</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Store the Wan-Animate-2 reference-video K/V cache in FP8 e4m3 with per-(token, head) scales, dequantized one block at a time. Lossy. Requires an NVIDIA GPU with FP8 support (SM89 or newer); otherwise the request fails.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DISABLE_COSMOS3_GUARDRAILS</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>0</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Set <code>1</code> to skip the Cosmos3 guardrails.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_SANA_WM_SKIP_REFINER</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>not set</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Skip the SANA-WM Stage-2 refiner (Stage-1-only output) when set to <code>1</code>, <code>true</code>, <code>yes</code> or <code>on</code>. The refiner components are not loaded.</td>
     </tr>
   </tbody>
 </table>
@@ -170,12 +240,17 @@ description: "Configure SGLang diffusion behavior with environment variables."
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>not set</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Optional FlashInfer FP4 GEMM backend override for diffusion NVFP4. When unset, SGLang defaults to <code>flashinfer_trtllm</code>.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Optional FlashInfer FP4 GEMM backend override for diffusion NVFP4: <code>auto</code>, <code>flashinfer_cudnn</code>, <code>flashinfer_cutlass</code> or <code>flashinfer_trtllm</code> (short forms <code>cudnn</code>, <code>cutlass</code> and <code>trtllm</code> also work). When unset, SGLang uses <code>flashinfer_trtllm</code> (<code>auto</code> on SM120 GPUs). An unknown value logs a warning and falls back to that default.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_ENABLE_W8A8_FP8_GEMM</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>false</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Experimental opt-in for fused W8A8 FP8 GEMM in diffusion weight-only FP8 linears. When disabled, FP8 weights are dequantized to the compute dtype before matmul. Enabling this dynamically quantizes activations to FP8 and may change output quality.</td>
+    </tr>
+    <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_FP8_WEIGHT_DEQUANT_CACHE</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>true</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Dequantize weight-only FP8 linear weights to the compute dtype once, at first use, instead of on every forward. Outputs are bit-identical; it costs weight memory. Weights stay FP8-resident when free device memory is low, under fused W8A8 GEMM, or when this is set to <code>0</code>.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_DIFFUSION_ENABLE_MXFP8_ATTENTION</code></td>

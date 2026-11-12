@@ -266,8 +266,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Import an installed package that registers out-of-tree diffusion models
     # and pipelines. This is shared with the SRT model plugin mechanism.
     "SGLANG_EXTERNAL_MODEL_PACKAGE": _lazy_str("SGLANG_EXTERNAL_MODEL_PACKAGE", ""),
-    # Enables torch profiler if set. Path to the directory where torch profiler
-    # traces are saved. Note that it must be an absolute path.
+    # Directory for torch profiler traces; does not enable profiling. Falls back
+    # to SGLANG_TORCH_PROFILER_DIR, then ./logs.
     "SGLANG_DIFFUSION_TORCH_PROFILER_DIR": _lazy_path(
         "SGLANG_DIFFUSION_TORCH_PROFILER_DIR"
     ),
@@ -466,13 +466,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
         "SGLANG_LINGBOT_LAZY_VAE_ENCODE_BLACK_FRAMES"
     ),
     # FlashInfer FP4 GEMM backend override for diffusion NVFP4.
-    # When unset, diffusion ModelOpt NVFP4 defaults to flashinfer_trtllm.
-    # Supported values:
-    # - auto
-    # - flashinfer_cudnn
-    # - flashinfer_cutlass
-    # - flashinfer_trtllm
-    # Legacy aliases `cudnn` and `trtllm` are also accepted.
+    # When unset: trtllm (auto on SM120).
+    # Values: auto, cudnn|flashinfer_cudnn, cutlass|flashinfer_cutlass,
+    # trtllm|flashinfer_trtllm.
     "SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND": _lazy_str(
         "SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND"
     ),

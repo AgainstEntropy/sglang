@@ -722,6 +722,14 @@ def test_upscaler_uses_bounded_cache(monkeypatch):
     assert list(realesrgan_upscaler._MODEL_CACHE) == ["b.pth"]
 
 
+def test_upscaler_default_weights_fit_vendored_rrdbnet():
+    """Scale 8 must not default to RealESRGAN_x8.pth, which RRDBNet cannot load."""
+    default_path = realesrgan_upscaler._default_model_path_for_scale
+    assert default_path(2) == "ai-forever/Real-ESRGAN:RealESRGAN_x2.pth"
+    for scale in (1, 3, 4, 8):
+        assert default_path(scale) == "ai-forever/Real-ESRGAN:RealESRGAN_x4.pth"
+
+
 def test_rife_uses_bounded_cache(monkeypatch):
     import sglang.multimodal_gen.runtime.utils.hf_diffusers_utils as hf
 

@@ -10,21 +10,22 @@ Use the CLI for one-off generation with `sglang generate` or to start a persiste
 If `--model-path` points to a supported non-diffusers source repo, SGLang can resolve it
 through a self-hosted overlay repo.
 
-SGLang first checks a built-in overlay registry. Concrete built-in mappings can be added over time without changing the CLI surface.
+SGLang first checks a built-in overlay registry, `BUILTIN_MODEL_OVERLAY_REGISTRY` in `python/sglang/multimodal_gen/runtime/utils/model_overlay.py`.
 
-Override example:
+Override example (`your-org/LTX-2.3-overlay` is a placeholder for your own overlay repo):
 
 ```bash Command
 export SGLANG_DIFFUSION_MODEL_OVERLAY_REGISTRY='{
-  "Wan-AI/Wan2.2-S2V-14B": {
-    "overlay_repo_id": "your-org/Wan2.2-S2V-14B-overlay",
+  "Lightricks/LTX-2.3": {
+    "overlay_repo_id": "your-org/LTX-2.3-overlay",
     "overlay_revision": "main"
   }
 }'
 
 sglang generate \
-  --model-path Wan-AI/Wan2.2-S2V-14B \
-  --config configs/wan_s2v.yaml
+  --model-path Lightricks/LTX-2.3 \
+  --prompt "A red fox running through fresh snow" \
+  --save-output
 ```
 
 The overlay repo should be a complete diffusers-style/componentized repo
@@ -257,7 +258,7 @@ width: 1280
 num_inference_steps: 6
 seed: 1024
 fps: 24
-precision: bf16
+dit_precision: bf16
 vae_precision: fp16
 vae_tiling: true
 vae_sp: true
@@ -601,7 +602,7 @@ Use `--backend diffusers` to force vanilla diffusers pipelines when no native SG
     <tr>
       <td><code>--backend</code></td>
       <td><code>auto</code>, <code>sglang</code>, <code>diffusers</code></td>
-      <td>Choose native SGLang, force native, or force diffusers</td>
+      <td><code>auto</code> prefers native SGLang and falls back to diffusers; <code>sglang</code> forces native; <code>diffusers</code> forces vanilla diffusers</td>
     </tr>
     <tr>
       <td><code>--attention-backend</code></td>

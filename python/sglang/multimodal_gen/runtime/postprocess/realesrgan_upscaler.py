@@ -34,10 +34,10 @@ logger = init_logger(__name__)
 # Default HuggingFace repo and filename for Real-ESRGAN weights
 _DEFAULT_REALESRGAN_HF_REPO = "ai-forever/Real-ESRGAN"
 _DEFAULT_REALESRGAN_FILENAME = "RealESRGAN_x4.pth"
+# No x8 entry: RealESRGAN_x8.pth has a conv_up3 layer that RRDBNet below lacks.
 _DEFAULT_REALESRGAN_FILENAMES_BY_SCALE = {
     2: "RealESRGAN_x2.pth",
     4: "RealESRGAN_x4.pth",
-    8: "RealESRGAN_x8.pth",
 }
 # RRDBNet full-frame 1024x1024 inference can request several GiB of cuDNN
 # workspace beyond its output tensor. Keep enough headroom to avoid using an
@@ -556,7 +556,7 @@ class ImageUpscaler:
     Lazy-loaded Real-ESRGAN upscaler.
 
     Weights are downloaded and cached on first call to `.upscale()`.
-    Supports both SRVGGNetCompact (lightweight, default) and RRDBNet (heavier).
+    Supports both RRDBNet (heavier, default) and SRVGGNetCompact (lightweight).
     """
 
     def __init__(
@@ -800,10 +800,11 @@ def upscale_frames(
         model_path:     Local .pth file, HuggingFace repo ID, or
                         ``repo_id:filename`` for a custom weight file.
                         None → default ``ai-forever/Real-ESRGAN`` with
+                        ``RealESRGAN_x2.pth`` for scale 2, else
                         ``RealESRGAN_x4.pth``.
         scale:          Desired final upscaling factor (e.g. 2, 3, 4).
-                        The 4× model is used internally; the output is
-                        resized to match *scale* when it differs.
+                        The output is resized to match *scale* when it
+                        differs from the model's native factor.
         half_precision: Use fp16 inference (faster on supported GPUs).
 
     Returns:

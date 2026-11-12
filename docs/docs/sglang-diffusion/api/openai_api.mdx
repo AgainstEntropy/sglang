@@ -219,13 +219,14 @@ Uploaded filenames are sanitized, and saved uploads are constrained to the
 server's upload directory. This also applies to image uploads for video and mesh
 generation.
 
+To pass a remote image instead of uploading a file, send `-F "url=..."` (repeatable) in place of, or in addition to, `image`. Each `url` value must be an `http(s)://` URL or a `data:image/...` URI; any other value is rejected with HTTP 400.
+
 **Curl Example (b64_json response):**
 
 ```bash Command
 curl -sS -X POST "http://localhost:30010/v1/images/edits" \
   -H "Authorization: Bearer sk-proj-1234567890" \
   -F "image=@local_input_image.png" \
-  -F "url=image_url.jpg" \
   -F "prompt=A calico cat playing a piano on stage" \
   -F "size=1024x1024" \
   -F "response_format=b64_json"
@@ -237,7 +238,6 @@ curl -sS -X POST "http://localhost:30010/v1/images/edits" \
 curl -sS -X POST "http://localhost:30010/v1/images/edits" \
   -H "Authorization: Bearer sk-proj-1234567890" \
   -F "image=@local_input_image.png" \
-  -F "url=image_url.jpg" \
   -F "prompt=A calico cat playing a piano on stage" \
   -F "size=1024x1024" \
   -F "response_format=url"
@@ -637,7 +637,6 @@ curl -sS -X GET "http://localhost:30010/v1/list_loras"
 
 Notes:
 - If LoRA is not enabled for the current pipeline, the server will return an error.
-- `num_lora_layers_with_weights` counts only layers that have LoRA weights applied for the active adapter.
 
 ### Example: Switching LoRAs
 
@@ -658,23 +657,23 @@ Notes:
 
 ### Adjust Output Quality
 
-The server supports adjusting output quality and compression levels for both image and video generation through the `output-quality` and `output-compression` parameters.
+The server supports adjusting output quality and compression levels for both image and video generation through the `output_quality` and `output_compression` request fields. `sglang generate` exposes the same settings as `--output-quality` and `--output-compression`.
 
 #### Parameters
 
-- **`output-quality`** (string, optional): Preset quality level that automatically sets compression. **Default is `"default"`**. Valid values:
+- **`output_quality`** (string, optional): Preset quality level that automatically sets compression. **Default is `"default"`**. Valid values:
   - `"maximum"`: Highest quality (100)
   - `"high"`: High quality (90)
   - `"medium"`: Medium quality (55)
   - `"low"`: Lower quality (35)
   - `"default"`: Auto-adjust based on media type (50 for video, 75 for image)
 
-- **`output-compression`** (integer, optional): Direct compression level override (0-100). **Default is `None`**. When provided (not `None`), takes precedence over `output-quality`.
+- **`output_compression`** (integer, optional): Direct compression level override (0-100). **Default is `None`**. When provided (not `None`), takes precedence over `output_quality`.
   - `0`: Lowest quality, smallest file size
   - `100`: Highest quality, largest file size
 
 #### Notes
 
-- **Precedence**: When both `output-quality` and `output-compression` are provided, `output-compression` takes precedence
-- **Format Support**: Quality settings apply to JPEG, and video formats. PNG is lossless: by default it is stored without zlib compression, which encodes fastest but keeps files close to the raw pixel size; an `output-compression` other than 75 selects zlib level `round(output-compression / 100 * 9)` instead
+- **Precedence**: When both `output_quality` and `output_compression` are provided, `output_compression` takes precedence
+- **Format Support**: Quality settings apply to JPEG, and video formats. PNG is lossless: by default it is stored without zlib compression, which encodes fastest but keeps files close to the raw pixel size; an `output_compression` other than 75 selects zlib level `round(output_compression / 100 * 9)` instead
 - **File Size vs Quality**: Lower compression values (or "low" quality preset) produce smaller files but may show visible artifacts
