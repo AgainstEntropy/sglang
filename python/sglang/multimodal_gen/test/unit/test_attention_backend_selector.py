@@ -92,7 +92,9 @@ class _FakePlatform:
     selected_backend = None
 
     @classmethod
-    def get_attn_backend_cls_str(cls, selected_backend, _head_size, _dtype):
+    def get_attn_backend_cls_str(
+        cls, selected_backend, _head_size, _dtype, *, selection_is_explicit=False
+    ):
         cls.selected_backend = selected_backend
         if selected_backend == AttentionBackendEnum.AITER:
             return "fake.AITERBackend"
@@ -188,6 +190,39 @@ class TestAttentionBackendFallback(unittest.TestCase):
 
         self.assertIs(backend, _FakeFABackend)
         self.assertIsNone(_FakePlatform.selected_backend)
+
+    def test_platform_without_selection_is_explicit_keyword_still_resolves(self):
+        """An out-of-tree platform overriding the documented three-argument
+        get_attn_backend_cls_str must keep resolving explicit and automatic
+        selections."""
+
+        class LegacyPlatform:
+            device_name = "test"
+
+            @classmethod
+            def get_attn_backend_cls_str(cls, selected_backend, head_size, dtype):
+                return "fake.SDPABackend"
+
+        server_args = _ServerArgs("torch_sdpa", explicit=True)
+        with (
+            patch(f"{_SELECTOR}.get_global_forced_attn_backend", return_value=None),
+            patch(f"{_SELECTOR}.get_global_server_args", return_value=server_args),
+            patch(
+                "sglang.multimodal_gen.runtime.platforms.current_platform",
+                LegacyPlatform,
+            ),
+            patch(
+                f"{_SELECTOR}.resolve_name",
+                side_effect=_FAKE_BACKENDS.__getitem__,
+            ),
+        ):
+            for selected in (None, AttentionBackendEnum.TORCH_SDPA):
+                _cached_get_attn_backend.cache_clear()
+                with self.subTest(selected=selected):
+                    backend = get_attn_backend(
+                        128, torch.bfloat16, selected_attention_backend=selected
+                    )
+                    self.assertIs(backend, _FakeSDPABackend)
 
     def test_component_override_requires_an_sglang_attention_layer(self):
         with self.assertRaisesRegex(

@@ -49,7 +49,9 @@ class _FakePlatform:
     device_name = "test"
 
     @staticmethod
-    def get_attn_backend_cls_str(selected_backend, _head_size, _dtype):
+    def get_attn_backend_cls_str(
+        selected_backend, _head_size, _dtype, *, selection_is_explicit=False
+    ):
         if selected_backend not in (None, AttentionBackendEnum.FA):
             return None
         return "fake.FABackend"

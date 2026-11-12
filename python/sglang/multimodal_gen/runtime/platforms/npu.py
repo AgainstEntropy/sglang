@@ -95,6 +95,8 @@ class NPUPlatformBase(Platform):
         selected_backend: AttentionBackendEnum | None,
         head_size: int,
         dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
     ) -> str:
         if selected_backend == AttentionBackendEnum.FA:
             logger.info("Using Ascend Flash Attention backend.")

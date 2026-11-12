@@ -82,6 +82,36 @@ def with_nvml_context(fn: Callable[_P, _R]) -> Callable[_P, _R]:
     return wrapper
 
 
+class _AttentionBackendUnavailable(Exception):
+    """A backend cannot run here. An explicit request raises; an automatic
+    selection falls back to ``fallback``."""
+
+    def __init__(self, reason: str, *, fallback: AttentionBackendEnum) -> None:
+        super().__init__(reason)
+        self.fallback = fallback
+
+
+def _fall_back_from_unavailable_backend(
+    *,
+    requested: AttentionBackendEnum,
+    unavailable: _AttentionBackendUnavailable,
+    selection_is_explicit: bool,
+) -> AttentionBackendEnum:
+    name = requested.name.lower()
+    if selection_is_explicit:
+        raise ValueError(
+            f"Attention backend '{name}' was requested but cannot run on this "
+            f"device: {unavailable}"
+        )
+    logger.info(
+        "Attention backend '%s' cannot run on this device (%s); falling back to %s.",
+        name,
+        unavailable,
+        unavailable.fallback.name.lower(),
+    )
+    return unavailable.fallback
+
+
 class _CudaAttentionBackendResolver:
     backend: AttentionBackendEnum
 
@@ -154,7 +184,7 @@ class _SageAttentionBackendResolver(_CudaAttentionBackendResolver):
     backend = AttentionBackendEnum.SAGE_ATTN
 
     @classmethod
-    def resolve(cls, platform) -> str | AttentionBackendEnum:
+    def resolve(cls, platform) -> str:
         trtllm_gen = srt_envs.SGLANG_USE_SAGE_ATTENTION_IMPL.get().lower() in {
             "trtllm_gen",
             "trtllm-gen",
@@ -164,10 +194,10 @@ class _SageAttentionBackendResolver(_CudaAttentionBackendResolver):
             try:
                 from sageattention import sageattn  # noqa: F401
             except ImportError:
-                logger.info(
-                    "Sage Attention backend is not installed (To install it, run `pip install git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 --no-build-isolation`). Falling back to Flash Attention."
-                )
-                return AttentionBackendEnum.FA
+                raise _AttentionBackendUnavailable(
+                    "SageAttention is not installed; install it with `pip install git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 --no-build-isolation`",
+                    fallback=AttentionBackendEnum.FA,
+                ) from None
 
         if not trtllm_gen and platform.is_hopper():
             try:
@@ -176,10 +206,10 @@ class _SageAttentionBackendResolver(_CudaAttentionBackendResolver):
                     qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_inst_buf_fake_impl,
                 )
             except ImportError:
-                logger.warning(
-                    "Installed Sage Attention is missing the SM90 binding fix. Falling back to Flash Attention. Reinstall with `pip install --force-reinstall git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 --no-build-isolation`."
-                )
-                return AttentionBackendEnum.FA
+                raise _AttentionBackendUnavailable(
+                    "the installed SageAttention lacks the SM90 binding fix; reinstall it with `pip install --force-reinstall git+https://github.com/thu-ml/SageAttention.git@d9704247a5139ab4c03bf7fc6b35cc0e2cbb5ea4 --no-build-isolation`",
+                    fallback=AttentionBackendEnum.FA,
+                ) from None
 
         try:
             from sglang.multimodal_gen.runtime.layers.attention.backends.sage_attn import (  # noqa: F401
@@ -187,29 +217,29 @@ class _SageAttentionBackendResolver(_CudaAttentionBackendResolver):
             )
 
             return "sglang.multimodal_gen.runtime.layers.attention.backends.sage_attn.SageAttentionBackend"
-        except ImportError:
-            logger.info(
-                "Sage Attention backend failed to import. Falling back to Flash Attention."
-            )
-            return AttentionBackendEnum.FA
+        except ImportError as error:
+            raise _AttentionBackendUnavailable(
+                f"the SageAttention backend failed to import ({error})",
+                fallback=AttentionBackendEnum.FA,
+            ) from None
 
 
 class _SageAttention3BackendResolver(_CudaAttentionBackendResolver):
     backend = AttentionBackendEnum.SAGE_ATTN_3
 
     @classmethod
-    def resolve(cls, platform) -> str | AttentionBackendEnum:
+    def resolve(cls, platform) -> str:
         try:
             from sglang.multimodal_gen.runtime.layers.attention.backends.sage_attn3 import (  # noqa: F401
                 SageAttention3Backend,
             )
 
             return "sglang.multimodal_gen.runtime.layers.attention.backends.sage_attn3.SageAttention3Backend"
-        except ImportError:
-            logger.info(
-                "Sage Attention 3 backend is not installed (To install it, see https://github.com/thu-ml/SageAttention/tree/main/sageattention3_blackwell#installation). Falling back to Torch SDPA."
-            )
-            return AttentionBackendEnum.TORCH_SDPA
+        except ImportError as error:
+            raise _AttentionBackendUnavailable(
+                f"SageAttention 3 is not installed ({error}); see https://github.com/thu-ml/SageAttention/tree/main/sageattention3_blackwell#installation",
+                fallback=AttentionBackendEnum.TORCH_SDPA,
+            ) from None
 
 
 class _SpargeAttentionBackendResolver(_CudaAttentionBackendResolver):
@@ -536,12 +566,15 @@ class _FP8FlashAttentionSM120BackendResolver(_CudaAttentionBackendResolver):
     # Blackwell). Dense non-causal head_dim 128 only; the backend itself falls
     # back to cuDNN SDPA for other calls.
     @classmethod
-    def resolve(cls, platform) -> str | AttentionBackendEnum:
-        if platform.get_device_capability() != (12, 0):
-            logger.warning(
-                "fp8_fa_sm120 attention needs an SM120 device; falling back to cuDNN SDPA."
+    def resolve(cls, platform) -> str:
+        capability = platform.get_device_capability()
+        if capability != (12, 0):
+            found = capability.as_version_str() if capability else "unknown"
+            raise _AttentionBackendUnavailable(
+                "fp8_fa_sm120 needs compute capability 12.0 (GeForce RTX 50 / "
+                f"RTX PRO Blackwell); this device reports {found}",
+                fallback=AttentionBackendEnum.TORCH_CUDNN_SDPA,
             )
-            return AttentionBackendEnum.TORCH_CUDNN_SDPA
         try:
             import cutlass.cute  # noqa: F401
             import triton  # noqa: F401
@@ -552,11 +585,10 @@ class _FP8FlashAttentionSM120BackendResolver(_CudaAttentionBackendResolver):
 
             return "sglang.multimodal_gen.runtime.layers.attention.backends.fp8_fa_sm120_attn.FP8FlashAttentionSM120Backend"
         except ImportError as error:
-            logger.warning(
-                "fp8_fa_sm120 attention backend failed to import (%s); falling back to cuDNN SDPA.",
-                error,
-            )
-            return AttentionBackendEnum.TORCH_CUDNN_SDPA
+            raise _AttentionBackendUnavailable(
+                f"its CuTe-DSL kernel needs nvidia-cutlass-dsl and Triton ({error})",
+                fallback=AttentionBackendEnum.TORCH_CUDNN_SDPA,
+            ) from None
 
 
 _CUDA_ATTENTION_BACKEND_RESOLVERS = {
@@ -752,50 +784,51 @@ class CudaPlatformBase(Platform):
         return True
 
     @classmethod
-    def _resolve_flash_attention_backend_cls_str(
-        cls, target_backend: AttentionBackendEnum, head_size: int, dtype: torch.dtype
-    ) -> str:
+    def _flash_attention_unavailable_reason(
+        cls, head_size: int, dtype: torch.dtype
+    ) -> str | None:
         if not cls.has_device_capability(80):
-            logger.info("Cannot use FlashAttention backend for Volta and Turing GPUs.")
-            target_backend = AttentionBackendEnum.TORCH_SDPA
-        elif dtype not in (torch.float16, torch.bfloat16):
-            logger.info(
-                "Cannot use FlashAttention backend for dtype other than "
-                "torch.float16 or torch.bfloat16."
+            return "FlashAttention needs compute capability 8.0 or newer"
+        if dtype not in (torch.float16, torch.bfloat16):
+            return f"FlashAttention supports float16 and bfloat16, not {dtype}"
+        if not cls._prepare_flash_attention_for_blackwell():
+            return "the flash_attn package is not installed"
+        try:
+            from sglang.multimodal_gen.runtime.layers.attention.backends.flash_attn import (  # noqa: F401
+                FlashAttentionBackend,
             )
-            target_backend = AttentionBackendEnum.TORCH_SDPA
+        except ImportError:
+            return "the flash_attn package is not installed"
 
-        if (
-            target_backend == AttentionBackendEnum.FA
-            and not cls._prepare_flash_attention_for_blackwell()
-        ):
-            target_backend = AttentionBackendEnum.TORCH_SDPA
+        supported_sizes = FlashAttentionBackend.get_supported_head_sizes()
+        # FA4 on sm100 serves every multiple of 8 up to 128, e.g. Qwen-VL vision heads (72, 80)
+        fa4_head_size = cls.is_blackwell() and head_size <= 128 and head_size % 8 == 0
+        if head_size not in supported_sizes and not fa4_head_size:
+            return (
+                f"FlashAttention does not support head size {head_size} on this "
+                f"device; supported head sizes are {supported_sizes}"
+            )
+        return None
 
+    @classmethod
+    def _resolve_flash_attention_backend_cls_str(
+        cls,
+        target_backend: AttentionBackendEnum,
+        head_size: int,
+        dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
+    ) -> str:
         if target_backend == AttentionBackendEnum.FA:
-            try:
-                from sglang.multimodal_gen.runtime.layers.attention.backends.flash_attn import (  # noqa: F401
-                    FlashAttentionBackend,
+            reason = cls._flash_attention_unavailable_reason(head_size, dtype)
+            if reason is not None:
+                target_backend = _fall_back_from_unavailable_backend(
+                    requested=AttentionBackendEnum.FA,
+                    unavailable=_AttentionBackendUnavailable(
+                        reason, fallback=AttentionBackendEnum.TORCH_SDPA
+                    ),
+                    selection_is_explicit=selection_is_explicit,
                 )
-
-                supported_sizes = FlashAttentionBackend.get_supported_head_sizes()
-                # FA4 on sm100 serves every multiple of 8 up to 128, e.g. Qwen-VL vision heads (72, 80)
-                fa4_head_size = (
-                    cls.is_blackwell() and head_size <= 128 and head_size % 8 == 0
-                )
-                if head_size not in supported_sizes and not fa4_head_size:
-                    logger.info(
-                        "Cannot use FlashAttention backend for head size %d.",
-                        head_size,
-                    )
-                    target_backend = AttentionBackendEnum.TORCH_SDPA
-            except ImportError:
-                logger.info(
-                    "Cannot use FlashAttention backend because the "
-                    "flash_attn package is not found. "
-                    "Make sure that flash_attn was built and installed "
-                    "(on by default)."
-                )
-                target_backend = AttentionBackendEnum.TORCH_SDPA
 
         if target_backend == AttentionBackendEnum.TORCH_SDPA:
             return _SDPA_BACKEND_CLS_STR
@@ -808,6 +841,8 @@ class CudaPlatformBase(Platform):
         selected_backend: AttentionBackendEnum | None,
         head_size: int,
         dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
     ) -> str:
         if selected_backend is None:
             target_backend = cls._resolve_default_attn_backend()
@@ -827,7 +862,15 @@ class CudaPlatformBase(Platform):
             if resolver is None:
                 raise ValueError(f"Invalid attention backend for {cls.device_name}")
 
-            resolved_backend = resolver.resolve(cls)
+            try:
+                resolved_backend = resolver.resolve(cls)
+            except _AttentionBackendUnavailable as unavailable:
+                fallback = _fall_back_from_unavailable_backend(
+                    requested=selected_backend,
+                    unavailable=unavailable,
+                    selection_is_explicit=selection_is_explicit,
+                )
+                return cls.get_attn_backend_cls_str(fallback, head_size, dtype)
             if isinstance(resolved_backend, str):
                 if selected_backend == AttentionBackendEnum.SAGE_ATTN:
                     backend_cls = resolve_name(resolved_backend)
@@ -841,7 +884,10 @@ class CudaPlatformBase(Platform):
             target_backend = resolved_backend
 
         return cls._resolve_flash_attention_backend_cls_str(
-            target_backend, head_size, dtype
+            target_backend,
+            head_size,
+            dtype,
+            selection_is_explicit=selection_is_explicit,
         )
 
     @classmethod

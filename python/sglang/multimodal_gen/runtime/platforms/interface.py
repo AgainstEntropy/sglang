@@ -320,8 +320,15 @@ class Platform:
         selected_backend: AttentionBackendEnum | None,
         head_size: int,
         dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
     ) -> str:
-        """Get the attention backend class of a device."""
+        """Get the attention backend class of a device.
+
+        ``selection_is_explicit`` is True when the user requested
+        ``selected_backend``; a platform should then raise ValueError
+        instead of substituting another backend that it can run.
+        """
         return ""
 
     @classmethod

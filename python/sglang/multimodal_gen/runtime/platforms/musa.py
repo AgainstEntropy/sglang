@@ -133,6 +133,8 @@ class MusaPlatformBase(Platform):
         selected_backend: AttentionBackendEnum | None,
         head_size: int,
         dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
     ) -> str:
         target_backend: AttentionBackendEnum | None = None
 

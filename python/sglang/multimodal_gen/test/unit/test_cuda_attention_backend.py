@@ -1,7 +1,7 @@
 import sys
 import types
 import unittest
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -19,7 +19,6 @@ from sglang.multimodal_gen.runtime.layers.attention.selector import (
 )
 from sglang.multimodal_gen.runtime.platforms.cuda import (
     CudaPlatformBase,
-    _SageAttentionBackendResolver,
     _SpargeAttentionBackendResolver,
 )
 from sglang.multimodal_gen.runtime.platforms.interface import (
@@ -31,6 +30,36 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 SDPA_BACKEND_CLS_STR = (
     "sglang.multimodal_gen.runtime.layers.attention.backends.sdpa.SDPABackend"
 )
+CUDNN_SDPA_BACKEND_CLS_STR = (
+    "sglang.multimodal_gen.runtime.layers.attention.backends.sdpa.CudnnSDPABackend"
+)
+FLASH_ATTN_MODULE = "sglang.multimodal_gen.runtime.layers.attention.backends.flash_attn"
+FA_BACKEND_CLS_STR = f"{FLASH_ATTN_MODULE}.FlashAttentionBackend"
+SAGE_ATTN_3_MODULE = (
+    "sglang.multimodal_gen.runtime.layers.attention.backends.sage_attn3"
+)
+
+
+def _fake_flash_attn_modules() -> dict[str, ModuleType]:
+    """FlashAttention stand-in, so the fallback chain does not depend on flash_attn."""
+
+    class FakeFlashAttentionBackend:
+        @staticmethod
+        def get_supported_head_sizes():
+            return [64, 128]
+
+        @staticmethod
+        def get_enum():
+            return AttentionBackendEnum.FA
+
+        @staticmethod
+        def unsupported_requirements(_requirements):
+            return ()
+
+    module = ModuleType(FLASH_ATTN_MODULE)
+    module.set_fa_ver = Mock()
+    module.FlashAttentionBackend = FakeFlashAttentionBackend
+    return {FLASH_ATTN_MODULE: module}
 
 
 class FakeCudaPlatform(CudaPlatformBase):
@@ -341,24 +370,161 @@ class TestCudaAttentionBackendSelection(unittest.TestCase):
                         backend = get_attn_backend(head_size, torch.float16)
                         self.assertEqual(backend.get_enum(), expected)
 
-    def test_hopper_sage_attention_without_sm90_fix_falls_back(self):
-        FakeCudaPlatform.is_hopper_device = True
-        sageattention = types.ModuleType("sageattention")
-        sageattention.__path__ = []
-        sageattention.sageattn = object()
-        sm90_compile = types.ModuleType("sageattention.sm90_compile")
-
-        with patch.dict(
-            sys.modules,
-            {
-                "sageattention": sageattention,
-                "sageattention.sm90_compile": sm90_compile,
-            },
-        ):
-            self.assertEqual(
-                _SageAttentionBackendResolver.resolve(FakeCudaPlatform),
+    def test_unrunnable_backend_raises_when_explicit_and_falls_back_otherwise(self):
+        """A requested backend that cannot run here used to be swapped for
+        another one silently. An explicit request must raise and name the
+        backend; an automatically selected one keeps its fallback."""
+        sage_without_sm90_fix = types.ModuleType("sageattention")
+        sage_without_sm90_fix.__path__ = []
+        sage_without_sm90_fix.sageattn = object()
+        fp16, bf16 = torch.float16, torch.bfloat16
+        cases = (
+            (
+                "sage_attn not installed",
+                AttentionBackendEnum.SAGE_ATTN,
+                {},
+                {"sageattention": None},
+                fp16,
+                128,
+                "'sage_attn'.*SageAttention is not installed",
+                FA_BACKEND_CLS_STR,
+            ),
+            (
+                "sage_attn without the SM90 fix on Hopper",
+                AttentionBackendEnum.SAGE_ATTN,
+                {"is_hopper_device": True},
+                {
+                    "sageattention": sage_without_sm90_fix,
+                    "sageattention.sm90_compile": ModuleType(
+                        "sageattention.sm90_compile"
+                    ),
+                },
+                fp16,
+                128,
+                "'sage_attn'.*SM90 binding fix",
+                FA_BACKEND_CLS_STR,
+            ),
+            (
+                "sage_attn_3 not installed",
+                AttentionBackendEnum.SAGE_ATTN_3,
+                {},
+                {SAGE_ATTN_3_MODULE: None},
+                bf16,
+                128,
+                "'sage_attn_3'.*SageAttention 3 is not installed",
+                SDPA_BACKEND_CLS_STR,
+            ),
+            (
+                "fp8_fa_sm120 off SM120",
+                AttentionBackendEnum.FP8_FA_SM120,
+                {"device_capability": DeviceCapability(10, 0)},
+                {},
+                bf16,
+                128,
+                "'fp8_fa_sm120'.*capability 12.0.*reports 10.0",
+                CUDNN_SDPA_BACKEND_CLS_STR,
+            ),
+            (
+                "fp8_fa_sm120 without its kernel dependencies",
+                AttentionBackendEnum.FP8_FA_SM120,
+                {"device_capability": DeviceCapability(12, 0)},
+                {"cutlass": None, "cutlass.cute": None},
+                bf16,
+                128,
+                "'fp8_fa_sm120'.*nvidia-cutlass-dsl",
+                CUDNN_SDPA_BACKEND_CLS_STR,
+            ),
+            (
+                "fa on a pre-Ampere GPU",
                 AttentionBackendEnum.FA,
-            )
+                {"supports_flash_attention": False},
+                {},
+                fp16,
+                128,
+                "'fa'.*compute capability 8.0",
+                SDPA_BACKEND_CLS_STR,
+            ),
+            (
+                "fa with float32",
+                AttentionBackendEnum.FA,
+                {},
+                {},
+                torch.float32,
+                128,
+                "'fa'.*float16 and bfloat16",
+                SDPA_BACKEND_CLS_STR,
+            ),
+            (
+                "fa with an unsupported head size",
+                AttentionBackendEnum.FA,
+                {},
+                {},
+                fp16,
+                72,
+                "'fa'.*head size 72",
+                SDPA_BACKEND_CLS_STR,
+            ),
+        )
+        for name, backend, attrs, modules, dtype, head_size, error, fallback in cases:
+            with self.subTest(name), ExitStack() as stack:
+                stack.enter_context(
+                    patch.dict(sys.modules, {**_fake_flash_attn_modules(), **modules})
+                )
+                for attr, value in attrs.items():
+                    stack.enter_context(patch.object(FakeCudaPlatform, attr, value))
+                with self.assertRaisesRegex(ValueError, error):
+                    FakeCudaPlatform.get_attn_backend_cls_str(
+                        backend, head_size, dtype, selection_is_explicit=True
+                    )
+                self.assertEqual(
+                    FakeCudaPlatform.get_attn_backend_cls_str(
+                        backend, head_size, dtype
+                    ),
+                    fallback,
+                )
+
+    def test_selector_passes_cli_explicitness_to_the_platform(self):
+        """Only a user-set --attention-backend is strict: the DiT fails, an
+        auxiliary component falls back, and a server-filled value falls back."""
+        selector = "sglang.multimodal_gen.runtime.layers.attention.selector"
+        server_args = ServerArgs.__new__(ServerArgs)
+        server_args.attention_backend = "sage_attn"
+        fa = AttentionBackendEnum.FA
+        with (
+            patch.dict(
+                sys.modules, {**_fake_flash_attn_modules(), "sageattention": None}
+            ),
+            patch(f"{selector}.get_global_server_args", return_value=server_args),
+            patch(f"{selector}.get_global_forced_attn_backend", return_value=None),
+            patch(
+                "sglang.multimodal_gen.runtime.platforms.current_platform",
+                FakeCudaPlatform,
+            ),
+        ):
+            for explicit_args, component, expected in (
+                ({"attention_backend"}, "transformer", None),
+                ({"attention_backend"}, "text_encoder", fa),
+                (set(), "transformer", fa),
+            ):
+                server_args._explicit_arg_names = explicit_args
+                _cached_get_attn_backend.cache_clear()
+                with (
+                    self.subTest(explicit=bool(explicit_args), component=component),
+                    (
+                        self.assertRaisesRegex(
+                            ValueError, "'sage_attn'.*SageAttention is not installed"
+                        )
+                        if expected is None
+                        else nullcontext()
+                    ),
+                    component_attn_backend_context_manager(
+                        None,
+                        component_name=component,
+                        allow_global_backend_fallback=component == "text_encoder",
+                    ),
+                ):
+                    backend = get_attn_backend(128, torch.float16)
+                    self.assertEqual(backend.get_enum(), expected)
 
     def test_sparge_attention_resolver(self):
         module = types.ModuleType("spas_sage_attn")

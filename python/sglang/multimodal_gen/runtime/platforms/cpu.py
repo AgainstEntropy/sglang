@@ -118,6 +118,8 @@ class CpuPlatform(Platform):
         selected_backend: AttentionBackendEnum | None,
         head_size: int,
         dtype: torch.dtype,
+        *,
+        selection_is_explicit: bool = False,
     ) -> str:
         amx_attn_usable = (
             cpu_has_amx_support() and dtype in _AMX_ATTN_DTYPES and head_size % 2 == 0

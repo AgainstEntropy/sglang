@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from vllm: https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/attention/selector.py
 
+import inspect
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -361,12 +362,14 @@ def get_attn_backend(
     unsupported_backend_name = None
     unsupported_requirements = ()
     for candidate_index, candidate in enumerate(candidate_backends):
+        explicit_candidate = selection_is_explicit and candidate_index == 0
         try:
             candidate_cls = _cached_get_attn_backend(
                 head_size,
                 dtype,
                 be_tuple,
                 candidate,
+                explicit_candidate,
             )
         except ValueError as error:
             if selection_error is None:
@@ -382,7 +385,6 @@ def get_attn_backend(
                     "cross-attention"
                 )
             continue
-        explicit_candidate = selection_is_explicit and candidate_index == 0
         if (
             automatic_backends
             and not explicit_candidate
@@ -449,12 +451,23 @@ def get_attn_backend(
     return attention_backend_cls
 
 
+def _accepts_selection_is_explicit(get_attn_backend_cls_str: Any) -> bool:
+    # Out-of-tree platforms may still override the signature without this keyword.
+    parameters = inspect.signature(get_attn_backend_cls_str).parameters.values()
+    return any(
+        parameter.name == "selection_is_explicit"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 @cache
 def _cached_get_attn_backend(
     head_size: int,
     dtype: torch.dtype,
     supported_attention_backends: tuple[AttentionBackendEnum],
     selected_backend: AttentionBackendEnum | None,
+    selection_is_explicit: bool = False,
 ) -> type[AttentionBackend]:
     from sglang.multimodal_gen.runtime.platforms import current_platform
 
@@ -467,8 +480,14 @@ def _cached_get_attn_backend(
     elif selected_backend is None and len(supported_attention_backends) == 1:
         selected_backend = next(iter(supported_attention_backends))
 
+    explicit_kwargs = (
+        {"selection_is_explicit": True}
+        if selection_is_explicit
+        and _accepts_selection_is_explicit(current_platform.get_attn_backend_cls_str)
+        else {}
+    )
     attention_cls = current_platform.get_attn_backend_cls_str(
-        selected_backend, head_size, dtype
+        selected_backend, head_size, dtype, **explicit_kwargs
     )
     if not attention_cls:
         raise ValueError(

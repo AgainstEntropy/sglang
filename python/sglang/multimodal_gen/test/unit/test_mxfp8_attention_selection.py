@@ -51,7 +51,7 @@ class TestMXFP8AttentionSelection(unittest.TestCase):
         )
 
     @staticmethod
-    def _backend(_head_size, _dtype, _supported, selected):
+    def _backend(_head_size, _dtype, _supported, selected, _explicit=False):
         selected = selected or AttentionBackendEnum.TORCH_SDPA
         return SimpleNamespace(
             get_enum=lambda: selected,

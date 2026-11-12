@@ -807,6 +807,8 @@ The `sglang.multimodal_gen.plugins` entry point remains for seams the `Platform`
 | Active | Execution | `get_compile_backend()`, `get_compile_options()`, `inference_mode()`, `seed_everything()`, `enable_dit_layerwise_offload_by_default()` |
 | Compatibility | Communicator | `get_device_communicator_cls()` remains the fallback used by `get_all_to_all_communicator_cls()` for existing platform subclasses. New OOT platforms should override the latter. |
 
+When the user requested the attention backend, `get_attn_backend_cls_str()` also receives the keyword `selection_is_explicit=True`, if the override accepts it. It should then raise `ValueError` naming what the backend needs instead of returning another backend. Overrides without the keyword keep working and decide on their own.
+
 Install the package, restart Python to refresh entry-point metadata, and verify explicit selection:
 
 ```bash

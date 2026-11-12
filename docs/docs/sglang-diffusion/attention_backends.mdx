@@ -197,6 +197,11 @@ Sparse backends selected for self-attention similarly fall back to a compatible
 dense backend for cross-attention. Explicit component overrides are otherwise
 strict.
 
+On CUDA, a backend you request that cannot run (its package is not installed,
+or the GPU, dtype or head size is unsupported) raises a `ValueError` at startup
+that names the backend and what it needs. Only a backend that SGLang selected
+automatically falls back to another one.
+
 ### Per-role overrides
 
 A role is the kind of attention a layer performs: `self` or `cross`. Appending
@@ -798,7 +803,7 @@ AITER quant constraints:
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>✅</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>❌</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>✅</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>CUDA requires SM80+ and fp16/bf16. XPU uses its own flash attention backend. FlashAttention is only used when the required runtime is installed; otherwise it falls back to <code>torch_sdpa</code>. On ROCm, <code>fa</code> resolves to <code>torch_sdpa</code>. No extra installations are required for NPU</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>CUDA requires SM80+ and fp16/bf16. XPU uses its own flash attention backend. On CUDA, an explicit <code>fa</code> that cannot run (pre-SM80 GPU, another dtype, an unsupported head size, or <code>flash_attn</code> missing) raises at startup; the automatic default falls back to <code>torch_sdpa</code>. On ROCm, <code>fa</code> resolves to <code>torch_sdpa</code>. No extra installations are required for NPU</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`torch_sdpa`</td>
@@ -828,7 +833,7 @@ AITER quant constraints:
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Yes</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>❌</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>❌</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Optional dependency on CUDA and MUSA. On Hopper, also falls back to FlashAttention when the installed package lacks the SM90 binding fix.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Optional dependency on CUDA and MUSA. On CUDA, requesting it raises at startup when SageAttention is not installed, or on Hopper when the installed package lacks the SM90 binding fix.</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`sage_attn_3`</td>
@@ -988,7 +993,7 @@ AITER quant constraints:
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>❌</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>❌</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>❌</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>CUDA SM120 only; falls back to <code>torch_cudnn_sdpa</code> on other devices and for unsupported calls.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>CUDA SM120 only; requesting it on another device raises at startup. On SM120, unsupported calls use <code>torch_cudnn_sdpa</code>.</td>
     </tr>
 </tbody>
 </table>
