@@ -446,7 +446,8 @@ def test_http_routes_enhance_once_before_sampling_and_preserve_options(
             response = server.client.post(
                 "/v1/videos",
                 data={**payload, "enhance_prompt": str(enabled).lower()},
-                files={"unused": ("empty", b"")},
+                # any part forces multipart; an empty extra_body is a known field
+                files={"extra_body": (None, "{}")},
             )
     assert response.status_code == 200, response.text
     expected = server.rewritten if enabled else original

@@ -36,15 +36,19 @@ from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
 from sglang.multimodal_gen.runtime.entrypoints.openai.storage import cloud_storage
 from sglang.multimodal_gen.runtime.entrypoints.openai.stores import VIDEO_STORE
 from sglang.multimodal_gen.runtime.entrypoints.openai.utils import (
+    COMMON_VIDEO_EXTENSION_FIELDS,
     DEFAULT_FPS,
     DEFAULT_VIDEO_SECONDS,
     add_common_data_to_response,
     build_sampling_params,
+    endpoint_form_field_names,
     flatten_extra_params,
     get_declared_request_extra_fields,
     merge_image_input_list,
     parse_form_extra_value,
     process_generation_batch,
+    raise_if_unknown_fields,
+    raise_on_unknown_request_fields,
     request_extra_value,
     request_field_value,
     request_model_kwargs,
@@ -107,14 +111,12 @@ async def shutdown_video_jobs() -> None:
             await task
 
 
-_MULTIPART_EXTRA_FORM_FIELDS = (
-    "attention_backend_override",
-    "cache_dit_params",
-    "cfg_gate_step",
-    "enable_cache_dit",
-    "quality",
-    "skip_softmax_params",
-)
+def _multipart_extension_fields(
+    sampling_params_cls: type[SamplingParams],
+) -> frozenset[str]:
+    return COMMON_VIDEO_EXTENSION_FIELDS | get_declared_request_extra_fields(
+        sampling_params_cls, "video"
+    )
 
 
 def _multipart_extra_form_keys(
@@ -124,10 +126,7 @@ def _multipart_extra_form_keys(
         dict.fromkeys(
             (
                 *VideoGenerationsRequest.model_fields,
-                *_MULTIPART_EXTRA_FORM_FIELDS,
-                *sorted(
-                    get_declared_request_extra_fields(sampling_params_cls, "video")
-                ),
+                *sorted(_multipart_extension_fields(sampling_params_cls)),
             )
         )
     )
@@ -177,6 +176,12 @@ def _multipart_video_extras(
             raise HTTPException(
                 status_code=400, detail="extra_params is not valid JSON"
             ) from exc
+    raise_if_unknown_fields(
+        {*raw_form.keys(), *extra_from_form},
+        endpoint_form_field_names(create_video)
+        | set(_multipart_extra_form_keys(sampling_params_cls)),
+        _multipart_extension_fields(sampling_params_cls),
+    )
     _merge_multipart_extra_form_fields(
         raw_form,
         extra_from_form,
@@ -663,6 +668,9 @@ async def create_video(
                         for key, value in flatten_extra_params(extra_json).items():
                             payload.setdefault(key, value)
                     flatten_extra_params(payload)
+                    raise_on_unknown_request_fields(
+                        payload, resolve_sampling_params_cls(server_args), "video"
+                    )
                     # Validate image input based on model task type
                     if payload.get("video_url") and not payload.get("video_path"):
                         payload["video_path"] = payload["video_url"]
@@ -692,6 +700,8 @@ async def create_video(
                     if resolve_sampling_params_cls(server_args).prompt_optional:
                         payload.setdefault("prompt", "")
                     req = VideoGenerationsRequest(**payload)
+                except HTTPException:
+                    raise
                 except Exception as e:
                     raise HTTPException(
                         status_code=400, detail=f"Invalid request body: {e}"

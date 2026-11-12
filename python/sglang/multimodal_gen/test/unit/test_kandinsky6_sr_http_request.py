@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from sglang.multimodal_gen.configs.pipeline_configs.kandinsky6_sr import (
@@ -80,16 +80,30 @@ def test_prompt_admission_and_sr_fields(tmp_path, multipart, prompt_required):
         assert {key: vars(batch.sampling_params)[key] for key in fields} == fields
 
 
-@pytest.mark.parametrize("params_cls", [Kandinsky6SRSamplingParams, SamplingParams])
-def test_multipart_allowlist_drops_undeclared_fields(params_cls):
+def test_multipart_keeps_declared_fields():
     extras = video_api._multipart_video_extras(
-        {"sr_resolution_scale": "4", "sr_tiles_batch_size": "3", "undeclared": "1"},
+        {"sr_resolution_scale": "4", "sr_tiles_batch_size": "3"},
         extra_body=None,
         extra_params=None,
-        sampling_params_cls=params_cls,
+        sampling_params_cls=Kandinsky6SRSamplingParams,
     )
-    assert extras == (
-        {"sr_resolution_scale": 4, "sr_tiles_batch_size": 3}
-        if params_cls is Kandinsky6SRSamplingParams
-        else {}
-    )
+    assert extras == {"sr_resolution_scale": 4, "sr_tiles_batch_size": 3}
+
+
+@pytest.mark.parametrize(
+    "params_cls, form, unknown",
+    [
+        (Kandinsky6SRSamplingParams, {"undeclared": "1"}, "undeclared"),
+        (SamplingParams, {"sr_resolution_scale": "4"}, "sr_resolution_scale"),
+    ],
+)
+def test_multipart_rejects_undeclared_fields(params_cls, form, unknown):
+    with pytest.raises(HTTPException) as exc_info:
+        video_api._multipart_video_extras(
+            form,
+            extra_body=None,
+            extra_params=None,
+            sampling_params_cls=params_cls,
+        )
+    assert exc_info.value.status_code == 400
+    assert f"Unknown request fields: {unknown}." in exc_info.value.detail

@@ -11,6 +11,7 @@ from unittest import mock
 
 import numpy as np
 import torch
+from fastapi import HTTPException
 from PIL import Image
 
 from sglang.multimodal_gen.configs.models.dits.cosmos3video import (
@@ -1233,18 +1234,17 @@ class TestCosmos3OpenAIProtocol(unittest.TestCase):
             "control_path": '["edge.mp4", "depth.mp4"]',
             "control_hint": '["edge", "depth"]',
             "action_mode": "policy",
-            "action_stats_path": "/tmp/action_stats.json",
         }
 
-        generic = _multipart_video_extras(
-            raw_form,
-            extra_body=None,
-            extra_params=None,
-            sampling_params_cls=SamplingParams,
-        )
-        self.assertNotIn("generate_sound", generic)
-        self.assertNotIn("control_path", generic)
-        self.assertNotIn("action_mode", generic)
+        with self.assertRaises(HTTPException) as ctx:
+            _multipart_video_extras(
+                raw_form,
+                extra_body=None,
+                extra_params=None,
+                sampling_params_cls=SamplingParams,
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("action_mode, control_hint, control_path", ctx.exception.detail)
 
         cosmos = _multipart_video_extras(
             raw_form,
@@ -1256,7 +1256,15 @@ class TestCosmos3OpenAIProtocol(unittest.TestCase):
         self.assertEqual(cosmos["control_path"], ["edge.mp4", "depth.mp4"])
         self.assertEqual(cosmos["control_hint"], ["edge", "depth"])
         self.assertEqual(cosmos["action_mode"], "policy")
-        self.assertNotIn("action_stats_path", cosmos)
+
+        with self.assertRaises(HTTPException) as ctx:
+            _multipart_video_extras(
+                {**raw_form, "action_stats_path": "/tmp/action_stats.json"},
+                extra_body=None,
+                extra_params=None,
+                sampling_params_cls=Cosmos3SamplingParams,
+            )
+        self.assertIn("action_stats_path", ctx.exception.detail)
 
     def test_generate_sound_false_disables_sound_duration(self):
         req = VideoGenerationsRequest(

@@ -157,7 +157,10 @@ Raw JSON requests may send these fields at the top level. Multipart video
 requests may send individual declared form fields or one JSON object in
 `extra_params`. SGLang forwards model-specific extensions only when the active
 model declares them, so a field for one model family does not silently change
-another model.
+another model. A request that sends any other field, at the top level or inside
+`extra_body`, fails with HTTP 400; the error names the unknown fields and lists
+the extension fields the active model accepts. `/v1/images/edits` accepts its
+documented form fields plus the active model's declared extensions.
 
 ### Image Generation
 

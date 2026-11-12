@@ -5,7 +5,7 @@ import contextlib
 import io
 import os
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -41,10 +41,14 @@ from sglang.multimodal_gen.runtime.entrypoints.openai.utils import (
     add_common_data_to_response,
     build_sampling_params,
     choose_output_image_ext,
+    endpoint_form_field_names,
     form_model_kwargs,
+    get_declared_request_extra_fields,
     merge_image_input_list,
     output_variant_index,
     process_generation_batch,
+    raise_if_unknown_fields,
+    raise_on_unknown_request_fields,
     request_extra_value,
     request_field_value,
     request_model_kwargs,
@@ -219,6 +223,17 @@ def _get_response_resize(
     return f"{width}x{height}"
 
 
+def _raise_on_unknown_edit_form_fields(
+    form: Any, sampling_params_cls: type[SamplingParams]
+) -> None:
+    extension_fields = get_declared_request_extra_fields(sampling_params_cls, "image")
+    raise_if_unknown_fields(
+        form.keys(),
+        endpoint_form_field_names(edits) | extension_fields,
+        extension_fields,
+    )
+
+
 def _build_request_sampling_params(request_id: str, **kwargs):
     # Request validation errors are client errors, as in the video API.
     try:
@@ -235,6 +250,7 @@ async def generations(
     request_id = generate_request_id()
     server_args = get_global_server_args()
     sampling_params_cls = resolve_sampling_params_cls(server_args)
+    raise_on_unknown_request_fields(request.model_extra, sampling_params_cls, "image")
     model_kwargs = request_model_kwargs(request, sampling_params_cls, "image")
     output_format = _resolve_image_output_format(
         request.output_format, sampling_params_cls
@@ -415,9 +431,9 @@ async def edits(
     request_id = generate_request_id()
     server_args = get_global_server_args()
     sampling_params_cls = resolve_sampling_params_cls(server_args)
-    model_kwargs = form_model_kwargs(
-        await raw_request.form(), sampling_params_cls, "image"
-    )
+    form = await raw_request.form()
+    _raise_on_unknown_edit_form_fields(form, sampling_params_cls)
+    model_kwargs = form_model_kwargs(form, sampling_params_cls, "image")
     output_format = _resolve_image_output_format(output_format, sampling_params_cls)
     resp_format = (response_format or "b64_json").lower()
     _raise_if_url_response_undeliverable(

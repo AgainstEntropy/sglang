@@ -396,7 +396,6 @@ def _build_sglang_payload(case: dict) -> dict:
         "prompt": case["prompt"],
         "size": f"{case['width']}x{case['height']}",
         "n": 1,
-        "response_format": "b64_json",
     }
     for key in (
         "num_inference_steps",
@@ -491,6 +490,8 @@ def send_image_request_sglang(
 ) -> float:
     """Send a single T2I request via SGLang's /v1/images/generations."""
     payload = _build_sglang_payload(case)
+    # /v1/videos has no response_format and rejects unknown fields
+    payload["response_format"] = "b64_json"
     if perf_dump_path:
         payload["perf_dump_path"] = perf_dump_path
 
@@ -555,8 +556,9 @@ def send_image_conditioned_request_sglang(
         "prompt": case["prompt"],
         "size": f"{case['width']}x{case['height']}",
         "n": "1",
-        "response_format": "b64_json",
     }
+    if file_field == "image":
+        data["response_format"] = "b64_json"
     for key in (
         "num_inference_steps",
         "guidance_scale",

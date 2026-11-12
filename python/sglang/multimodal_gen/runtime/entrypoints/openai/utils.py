@@ -10,10 +10,20 @@ import tempfile
 import time
 from contextlib import contextmanager, suppress
 from functools import cache
-from typing import Any, Generator, List, Literal, Optional, Union
+from typing import (
+    Any,
+    Callable,
+    Generator,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Union,
+)
 
 import httpx
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, UploadFile, params
 from pydantic import BaseModel
 
 from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
@@ -24,6 +34,10 @@ from sglang.multimodal_gen.runtime.entrypoints.control_requests import (
     SetLoraReq,
     ShutdownReq,
     UnmergeLoraWeightsReq,
+)
+from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
+    ImageGenerationsRequest,
+    VideoGenerationsRequest,
 )
 from sglang.multimodal_gen.runtime.entrypoints.utils import (
     format_lora_message,
@@ -201,6 +215,82 @@ def request_model_kwargs(
         if value is not None:
             kwargs[field_name] = value
     return kwargs
+
+
+# Extension fields every model accepts. The endpoints read them from request
+# extras rather than declaring them on the shared protocol models.
+COMMON_IMAGE_EXTENSION_FIELDS = frozenset(
+    {
+        "attention_backend_override",
+        "cache_dit_params",
+        "cfg_gate_step",
+        "enable_cache_dit",
+        "skip_softmax_params",
+    }
+)
+COMMON_VIDEO_EXTENSION_FIELDS = COMMON_IMAGE_EXTENSION_FIELDS | {
+    "quality",
+    "use_diffusion_decoder",
+}
+
+
+def _sent_extension_field_names(fields: Mapping[str, Any]) -> set[str]:
+    """Top-level field names plus the names nested in transport containers."""
+    names = {key for key in fields if key not in _REQUEST_EXTRA_CONTAINERS}
+    for container_name in _REQUEST_EXTRA_CONTAINERS:
+        names.update(_parse_request_extra_container(fields.get(container_name)))
+    return names
+
+
+def raise_if_unknown_fields(
+    sent: Iterable[str],
+    allowed: Iterable[str],
+    extension_fields: Iterable[str],
+) -> None:
+    """Return a 400 naming every sent field that the endpoint would not read."""
+    allowed = set(allowed)
+    # flatten_extra_params maps guardrails onto use_guardrails
+    if "use_guardrails" in allowed:
+        allowed.add("guardrails")
+    unknown = sorted(set(sent) - allowed)
+    if unknown:
+        raise _bad_request(
+            f"Unknown request fields: {', '.join(unknown)}. Extension fields "
+            f"accepted by this model: {', '.join(sorted(extension_fields)) or 'none'}"
+        )
+
+
+def raise_on_unknown_request_fields(
+    fields: Mapping[str, Any],
+    sampling_params_cls: type[SamplingParams],
+    api: Literal["image", "video"],
+) -> None:
+    """Reject JSON fields, including those nested in ``extra_body`` and the other
+    containers, that neither the protocol model nor the extensions declare."""
+    if api == "image":
+        protocol_fields = ImageGenerationsRequest.model_fields
+        extension_fields = COMMON_IMAGE_EXTENSION_FIELDS
+    else:
+        protocol_fields = VideoGenerationsRequest.model_fields
+        extension_fields = COMMON_VIDEO_EXTENSION_FIELDS
+    extension_fields = extension_fields | get_declared_request_extra_fields(
+        sampling_params_cls, api
+    )
+    raise_if_unknown_fields(
+        _sent_extension_field_names(fields),
+        {*protocol_fields, *extension_fields},
+        extension_fields,
+    )
+
+
+@cache
+def endpoint_form_field_names(endpoint: Callable[..., Any]) -> frozenset[str]:
+    """Return the multipart field names a FastAPI endpoint declares."""
+    names = set()
+    for param in inspect.signature(endpoint).parameters.values():
+        if isinstance(param.default, params.Form):
+            names.add(param.default.alias or param.name)
+    return frozenset(names)
 
 
 def parse_form_extra_value(value: Any) -> Any:
