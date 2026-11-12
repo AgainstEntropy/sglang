@@ -96,6 +96,7 @@ with open("ernie_image.png", "wb") as f:
 ## 5. Configuration tips
 
 - ERNIE-Image is a text-to-image pipeline; do not pass `--image-path`.
+- The two checkpoints have different sampling defaults. ERNIE-Image runs 50 steps at guidance 5.0. ERNIE-Image-Turbo follows its model card, 8 steps at guidance 1.0, which also skips the negative-prompt pass. Set `num_inference_steps` or `guidance_scale` on the request to override either default.
 - `--performance-mode auto` keeps conservative defaults while preserving explicit user flags.
 - If the checkpoint includes a PE component, SGLang loads it automatically with the native Ministral3 runtime. Use `--layerwise-offload-components pe` when the local PE decoder needs to trade latency for lower GPU memory usage.
 - On NVIDIA CUDA, use `--num-gpus 2 --tp-size 1 --ulysses-degree 2 --encoder-parallel replicate` to shard the DiT image tokens across two GPUs while retaining the full text on each rank. Both checkpoints use this path. Measure your target resolution: communication can make smaller images slower.

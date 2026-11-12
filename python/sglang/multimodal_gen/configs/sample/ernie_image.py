@@ -17,3 +17,10 @@ class ErnieImageSamplingParams(SamplingParams):
     @classmethod
     def image_request_extra_fields(cls) -> frozenset[str]:
         return frozenset({"use_pe"})
+
+
+@dataclass
+class ErnieImageTurboSamplingParams(ErnieImageSamplingParams):
+    # The Turbo model card recipe; guidance 1.0 also skips the negative pass.
+    guidance_scale: float = 1.0
+    num_inference_steps: int = 8

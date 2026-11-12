@@ -1,14 +1,18 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
+from sglang.multimodal_gen import registry
 from sglang.multimodal_gen.configs.models.encoders.base import BaseEncoderOutput
 from sglang.multimodal_gen.configs.pipeline_configs.base import TextConditioningOutput
 from sglang.multimodal_gen.configs.pipeline_configs.ernie_image import (
     ErnieImagePipelineConfig,
     ernie_image_postprocess_text,
 )
+from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
+from sglang.multimodal_gen.runtime.pipelines.ernie_image import ErnieImagePipeline
 
 
 class TestErnieImagePostprocessText(unittest.TestCase):
@@ -85,6 +89,39 @@ class TestErnieImagePrepareCondKwargs(unittest.TestCase):
         self.assertTrue(bool(mask[0, 17]))
         self.assertFalse(bool(mask[0, 18]))
         self.assertTrue(bool(mask[1].all()))
+
+
+class TestErnieImageSamplingDefaults(unittest.TestCase):
+    """Turbo must not inherit the base model's 50-step, CFG 5.0 defaults."""
+
+    # (model path, num_inference_steps, guidance_scale, uses CFG)
+    CASES = [
+        ("baidu/ERNIE-Image", 50, 5.0, True),
+        ("/models/ERNIE-Image", 50, 5.0, True),
+        ("baidu/ERNIE-Image-Turbo", 8, 1.0, False),
+        ("/models/ERNIE-Image-Turbo", 8, 1.0, False),
+        ("/hub/models--baidu--ERNIE-Image-Turbo/snapshots/4f2a", 8, 1.0, False),
+    ]
+
+    def setUp(self) -> None:
+        registry.get_model_info.cache_clear()
+        registry._get_config_info.cache_clear()
+        self.addCleanup(registry.get_model_info.cache_clear)
+        self.addCleanup(registry._get_config_info.cache_clear)
+        model_index = {"_class_name": ErnieImagePipeline.pipeline_name}
+        patcher = patch.object(
+            registry, "maybe_download_model_index", lambda _: model_index
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_defaults_follow_the_checkpoint(self) -> None:
+        for model_path, steps, guidance, uses_cfg in self.CASES:
+            with self.subTest(model_path=model_path):
+                params = SamplingParams.from_pretrained(model_path, backend="sglang")
+                self.assertEqual(params.num_inference_steps, steps)
+                self.assertEqual(params.guidance_scale, guidance)
+                self.assertEqual(params.should_use_classifier_free_guidance(), uses_cfg)
 
 
 if __name__ == "__main__":

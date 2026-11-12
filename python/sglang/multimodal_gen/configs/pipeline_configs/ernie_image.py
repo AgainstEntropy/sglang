@@ -260,16 +260,21 @@ class ErnieImagePipelineConfig(ImagePipelineConfig):
 def register():
     from sglang.multimodal_gen.configs.sample.ernie_image import (
         ErnieImageSamplingParams,
+        ErnieImageTurboSamplingParams,
     )
     from sglang.multimodal_gen.registry import register_configs
 
+    # Turbo registers first so its detector wins over the base "ernie-image" one.
+    register_configs(
+        sampling_param_cls=ErnieImageTurboSamplingParams,
+        pipeline_config_cls=ErnieImagePipelineConfig,
+        hf_model_paths=["baidu/ERNIE-Image-Turbo"],
+        model_detectors=[lambda hf_id: "ernie-image-turbo" in hf_id.lower()],
+    )
     register_configs(
         sampling_param_cls=ErnieImageSamplingParams,
         pipeline_config_cls=ErnieImagePipelineConfig,
-        hf_model_paths=[
-            "baidu/ERNIE-Image",
-            "baidu/ERNIE-Image-Turbo",
-        ],
+        hf_model_paths=["baidu/ERNIE-Image"],
         model_detectors=[
             lambda hf_id: "ernie-image" in hf_id.lower(),
         ],
