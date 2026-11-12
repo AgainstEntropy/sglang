@@ -9,9 +9,8 @@ SGLang's diffusion/multimodal generation subsystem. Separate from the LLM runtim
 **Before running or deploying any model, read `docs/cookbook/diffusion/<Family>/`.**
 That page carries the deployment command we recommend to users — GPU count,
 parallelism degrees, pipeline class, offload flags — and it is the answer to
-"how should this model be served". Families: Cosmos, Ernie-Image, FLUX,
-Ideogram, JoyEcho, Krea, LTX, LingBot-Video, LingBot-World, LongLive, MOVA,
-MiniMax, Qwen-Image, SANA-Video, SANA-WM, Wan, Z-Image.
+"how should this model be served". Run `ls docs/cookbook/diffusion/` for the
+current families.
 
 The configs under `test/` are a different thing: pinned, reproducible CI setups
 for correctness and regression checks, not deployment advice. Reach for them
@@ -54,7 +53,7 @@ runtime/
 ├── models/             # encoders/, dits/, vaes/, schedulers/
 ├── layers/             # attention/, lora/, quantization/
 ├── loader/             # Model loading, weight utils
-├── server_args.py      # ServerArgs (all CLI/config params)
+├── server_args/        # ServerArgs (server_args.py), auto_tune.py, disagg.py
 └── distributed/        # Multi-GPU (TP, SP: ulysses/ring)
 configs/
 ├── pipeline_configs/    # Per-model pipeline configs
@@ -71,7 +70,7 @@ configs/
 | `Scheduler` | `runtime/managers/scheduler.py` | ZMQ event loop, request dispatch |
 | `GPUWorker` | `runtime/managers/gpu_worker.py` | GPU inference worker |
 | `Req` / `OutputBatch` | `runtime/pipelines_core/schedule_batch.py` | Request/output containers |
-| `ServerArgs` | `runtime/server_args.py` | All config params |
+| `ServerArgs` | `runtime/server_args/server_args.py` | All config params |
 | `SamplingParams` | `configs/sample/sampling_params.py` | Generation params |
 | `PipelineConfig` | `configs/pipeline_configs/base.py` | Model structure config |
 
@@ -120,6 +119,6 @@ Look for `Pixel data generated successfully in xxxx seconds` in console output. 
 
 ## Env Vars
 
-Defined in `envs.py` (300+ vars). Key ones:
+Most are declared in `envs.py` (~80 vars). Key ones:
 - `SGLANG_CACHE_DIT_ENABLED` — enable Cache-DiT acceleration
-- `SGLANG_CLOUD_STORAGE_TYPE` — cloud output storage (s3, etc.)
+- `SGLANG_CLOUD_STORAGE_TYPE` — set to `s3` to upload outputs to cloud storage; read in `runtime/entrypoints/openai/storage.py`, not `envs.py`

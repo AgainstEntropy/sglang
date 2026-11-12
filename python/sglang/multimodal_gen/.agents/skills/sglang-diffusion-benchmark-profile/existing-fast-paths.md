@@ -56,7 +56,7 @@ framework-specific optimization workflow.
 - `python/sglang/multimodal_gen/runtime/models/vaes/conv_fold.py`
 - `python/sglang/kernels/ops/diffusion/norm/channel_rmsnorm_finish_silu_jit.py`
 - `python/sglang/kernels/ops/diffusion/norm/channel_rmsnorm_silu_nhwc_jit.py`
-- `python/sglang/kernels/ops/diffusion/elementwise/bias_residual_add_jit.py`
+- `python/sglang/kernels/ops/diffusion/norm/bias_residual_add_jit.py`
 - `python/sglang/multimodal_gen/runtime/breakable_cuda_graph/runner.py`
 - `test/registered/kernels/ops/diffusion/test_modulate.py`
 - `test/registered/kernels/ops/diffusion/test_norm.py`
@@ -84,7 +84,7 @@ framework-specific optimization workflow.
   column tile rather than Triton autotuning. Do not reintroduce request-time
   autotuning here: LingBot-World calls this path once per transformer block,
   and tuning overhead can dominate its first denoise step.
-- NPU fallback: `scale_shift.py` swaps to `npu_fallback` native path.
+- NPU fallback: `scale_shift_triton.py` dispatches to `common/fallback_npu.py: fuse_scale_shift_native`.
 - Validation: `test/registered/kernels/ops/diffusion/test_modulate.py` and `test_model_fast_paths.py`.
 
 2. Norm + Scale/Shift fusion (CuTe DSL)
@@ -158,7 +158,7 @@ framework-specific optimization workflow.
   native PyTorch formula.
 
 6. Triton LayerNorm/RMSNorm fusion
-- Kernels: `rms_norm_fn`, `layer_norm_fn`, `norm_infer`
+- Kernels: `rms_norm_fn`, `norm_infer`
 - Locations: `kernels/ops/diffusion/norm/norm_triton.py`, `layernorm.py`
 - Use cases: fp32 RMSNorm with residual/dropout/rowscale/x1 branches, and inference-friendly `norm_infer`.
 - Constraints: last dim must be contiguous, and `N * element_size < 64KB`.
@@ -175,7 +175,7 @@ framework-specific optimization workflow.
 - Locations: `kernels/ops/diffusion/rope/rotary_triton.py`, `rotary_embedding/utils.py`
 - Use case: GPT-J style RoPE when not Neox.
 - Constraints: `head_size` must be even.
-- NPU fallback: `npu_fallback.apply_rotary_embedding_native`.
+- NPU fallback: `common/fallback_npu.py: apply_rotary_embedding_native`.
 - Validation: `test/registered/kernels/ops/attention/test_rope.py`.
 
 9. LTX2 split RoPE fusion
@@ -354,20 +354,20 @@ framework-specific optimization workflow.
   aten's separate conv-bias pass disappears for each residual block's second
   conv (`bias_residual_add` applies bias and residual in one pass) and for the
   upsampler conv (`dup_up3d_add` takes the bias on the shortcut add).
-- Under `quality=extra-high` / `high` (`VaeFastPathGate`, decode scoped): the
+- Under `quality=lossless` / `high` (`VaeFastPathGate`, decode scoped): the
   decoder switches to channels_last, the channel RMSNorm + SiLU runs as one
   lane-group-per-pixel NHWC kernel (own fp32 reduction order, not bit-exact)
   that also takes the first conv's bias, and the nearest 2x upsample + conv3x3
   of each upsampler becomes one ConvTranspose2d(k4, s2, p1) with fp32-folded
   weights (`conv_fold.py`, shared with FLUX.2); leaving the scope restores the
   NCHW parameter layout. Measured on one SM120 GPU at 1024x1024: decode
-  186.0 ms -> 159.8 ms (lossless) -> 100.4 ms (extra-high), RGBA PSNR 59 dB and
-  SSIM > 0.9999 against the lossless image. The remaining extra-high decode is
+  186.0 ms -> 159.8 ms (exact) -> 100.4 ms (lossless), RGBA PSNR 59 dB and
+  SSIM > 0.9999 against the exact image. The remaining lossless decode is
   ~80% cuDNN conv time (the last up block runs six 3x3 convs at 1024x1024).
-- Validation: `test/registered/kernels/ops/diffusion/test_channel_rmsnorm_finish_silu.py`,
-  `test_channel_rmsnorm_silu_nhwc.py`, `test_bias_residual_add.py`, the
-  `dup_up3d_add` bias case in `test_layout.py`, and
-  `test_qwen_image21_vae_fast_paths.py`.
+- Validation: `test/registered/kernels/ops/diffusion/test_norm.py` (channel
+  RMSNorm finish/NHWC and `bias_residual_add` cases), the `dup_up3d_add` bias
+  case in `test_layout.py`, and the Qwen-Image 2.1 VAE cases in
+  `test_model_fast_paths.py`.
 
 19. MiniMax-H3 video VAE batched decode and output kernels
 - Kernels: `minimax_h3_vae_temporal_blend_write`, `minimax_h3_vae_denorm_clamp`.

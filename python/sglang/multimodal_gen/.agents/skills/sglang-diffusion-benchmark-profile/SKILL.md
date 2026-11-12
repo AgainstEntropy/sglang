@@ -121,7 +121,7 @@ misses only into the isolated cache, and removes links plus new downloads in
 its normal cleanup finally block without modifying the seed cache.
 
 Keep prompt, negative prompt, seed, shape, steps, guidance, dtype, topology,
-and residency fixed. Lossless comparisons require byte-identical artifacts.
+and residency fixed. `quality=exact` comparisons require byte-identical artifacts.
 For `quality=lossless` and `quality=high`, report aggregate and worst-frame SSIM/PSNR; the repository
 defaults are 0.95/28 dB for images and 0.92/24 dB for video unless the model's
 checked-in consistency metadata defines a different threshold. A performance

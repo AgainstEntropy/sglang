@@ -142,7 +142,7 @@ NVFP4:
 - the official diffusers export often already contains packed FP4 weights, scale tensors, and enough safetensors metadata for SGLang to rebuild the quant config
 - in that case SGLang mainly needs to detect the checkpoint family and rearrange tensors into the runtime layout
 - this is why NVFP4 often does not need an extra offline conversion pass like FP8 does
-- backend choice matters on B200; record whether the run used the default CUTLASS path or a cuDNN-backed FlashInfer FP4 GEMM path
+- backend choice matters on B200; record `SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND` for each run (default FlashInfer `trtllm`, `auto` on SM120; alternatives `cutlass`, `cudnn`)
 
 Important caveat:
 

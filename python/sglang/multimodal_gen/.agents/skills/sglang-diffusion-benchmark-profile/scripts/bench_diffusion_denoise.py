@@ -137,6 +137,7 @@ GENERATED_OUTPUT_SUFFIXES = {
     ".webp",
 }
 NIGHTLY_PRESET_ORDER = (
+    "anima",
     "flux",
     "flux2",
     "qwen",
@@ -212,7 +213,18 @@ LINGBOT_WORLD_CONFIG_OVERRIDES = {
 # Each entry produces the same `sglang generate` command as shown in that doc.
 # ---------------------------------------------------------------------------
 MODELS = {
-    # 1. Nightly: flux1_dev_t2i_1024
+    # 1. Nightly: anima_base_t2i_1024
+    "anima": {
+        "nightly_case_id": "anima_base_t2i_1024",
+        "path": "circlestone-labs/Anima-Base-v1.0-Diffusers",
+        "prompt": "masterpiece, best quality, safe, watercolor landscape, a quiet seaside village at sunset",
+        "extra_args": [
+            "--width=1024",
+            "--height=1024",
+            "--performance-mode=speed",
+        ],
+    },
+    # 2. Nightly: flux1_dev_t2i_1024
     "flux": {
         "nightly_case_id": "flux1_dev_t2i_1024",
         "path": "black-forest-labs/FLUX.1-dev",
@@ -225,7 +237,7 @@ MODELS = {
             "--component-residency=dit=resident",
         ],
     },
-    # 2. Nightly: flux2_dev_t2i_1024
+    # 3. Nightly: flux2_dev_t2i_1024
     "flux2": {
         "nightly_case_id": "flux2_dev_t2i_1024",
         "path": "black-forest-labs/FLUX.2-dev",
@@ -238,7 +250,7 @@ MODELS = {
             "--component-residency=dit=resident",
         ],
     },
-    # 3. Nightly: qwen_image_2512_t2i_1024
+    # 4. Nightly: qwen_image_2512_t2i_1024
     "qwen": {
         "nightly_case_id": "qwen_image_2512_t2i_1024",
         "path": "Qwen/Qwen-Image-2512",
@@ -250,7 +262,7 @@ MODELS = {
             "--tp-size=2",
         ],
     },
-    # 4. Nightly: qwen_image_edit_2511
+    # 5. Nightly: qwen_image_edit_2511
     # Requires: <repo>/inputs/diffusion_benchmark/figs/cat.png
     "qwen-edit": {
         "nightly_case_id": "qwen_image_edit_2511",
@@ -264,7 +276,7 @@ MODELS = {
             "--tp-size=2",
         ],
     },
-    # 5. Nightly: zimage_turbo_t2i_1024
+    # 6. Nightly: zimage_turbo_t2i_1024
     "zimage": {
         "nightly_case_id": "zimage_turbo_t2i_1024",
         "path": "Tongyi-MAI/Z-Image-Turbo",
@@ -276,7 +288,7 @@ MODELS = {
             "--tp-size=2",
         ],
     },
-    # 6. Nightly: wan22_t2v_a14b_720p
+    # 7. Nightly: wan22_t2v_a14b_720p
     "wan-t2v": {
         "nightly_case_id": "wan22_t2v_a14b_720p",
         "path": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
@@ -292,7 +304,7 @@ MODELS = {
             "--pin-cpu-memory",
         ],
     },
-    # 7. Nightly: wan22_ti2v_5b_720p
+    # 8. Nightly: wan22_ti2v_5b_720p
     # Requires: <repo>/inputs/diffusion_benchmark/figs/cat.png
     "wan-ti2v": {
         "nightly_case_id": "wan22_ti2v_5b_720p",
@@ -305,7 +317,7 @@ MODELS = {
             "--num-frames=81",
         ],
     },
-    # 8. Nightly: ltx2.3_twostage_ti2v_2gpus
+    # 9. Nightly: ltx2.3_twostage_ti2v_2gpus
     # Requires: <repo>/inputs/diffusion_benchmark/figs/cat.png
     "ltx23-ti2v-two-stage": {
         "nightly_case_id": "ltx2.3_twostage_ti2v_2gpus",
@@ -321,7 +333,7 @@ MODELS = {
             "--cfg-parallel-size=2",
         ],
     },
-    # 9. Nightly: ideogram4_fp8_t2i_2gpu
+    # 10. Nightly: ideogram4_fp8_t2i_2gpu
     "ideogram4-fp8": {
         "nightly_case_id": "ideogram4_fp8_t2i_2gpu",
         "path": "ideogram-ai/ideogram-4-fp8",
@@ -334,7 +346,7 @@ MODELS = {
             "--attention-backend=fa",
         ],
     },
-    # 10. Nightly: cosmos3_super_t2v_2gpu
+    # 11. Nightly: cosmos3_super_t2v_2gpu
     "cosmos3-super-t2v": {
         "nightly_case_id": "cosmos3_super_t2v_2gpu",
         "path": "nvidia/Cosmos3-Super",
@@ -366,7 +378,7 @@ MODELS = {
             "--tp-size=2",
         ],
     },
-    # 11. Nightly: wan22_i2v_a14b_720p
+    # 12. Nightly: wan22_i2v_a14b_720p
     # Requires: <repo>/inputs/diffusion_benchmark/figs/cat.png
     "wan-i2v": {
         "nightly_case_id": "wan22_i2v_a14b_720p",
@@ -384,7 +396,7 @@ MODELS = {
             "--pin-cpu-memory",
         ],
     },
-    # 12. Nightly: minimax_h3_t2va_5s
+    # 13. Nightly: minimax_h3_t2va_5s
     # MiniMax-H3 owns its temporal canvas through target.duration_seconds, so
     # the model-specific sampling fields are passed through --config instead
     # of generic --width/--height/--num-frames flags.

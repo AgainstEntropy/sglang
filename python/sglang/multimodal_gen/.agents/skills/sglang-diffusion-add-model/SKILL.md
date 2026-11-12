@@ -253,7 +253,7 @@ class MyModelVAEConfig(VAEConfig):
 ```python
 from dataclasses import dataclass
 
-from sglang.multimodal_gen.configs.sample.base import SamplingParams
+from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
 
 
 @dataclass
@@ -590,11 +590,30 @@ replaces the DiT forward, using ComfyUI's own text encoders and VAE. Choose
 this only when the model denoises a single latent tensor that ComfyUI already
 knows how to build and decode.
 
-Cost, per model: a `runtime/pipelines/comfyui_<model>_pipeline.py` that maps
-ComfyUI's single-file checkpoint layout onto the native module tree (350-690
-lines in the existing three), an executor in
-`apps/ComfyUI_SGLDiffusion/executors/` that adapts latent layout and
-conditioning to `Req`, and entries in both dicts in `core/generator.py`.
+Cost, per model:
+
+- a checkpoint mapper in `runtime/loader/comfyui_checkpoints/<model>.py` that
+  maps ComfyUI's single-file (safetensors or GGUF) DiT layout onto the native
+  module tree (about 60-280 lines in the existing mappers). It registers
+  itself with `register_comfyui_checkpoint(...)` under the native pipeline
+  class name and must be added to the imports in
+  `comfyui_checkpoints/__init__.py` and `spec._discover_checkpoint_specs()`;
+  otherwise `get_comfyui_checkpoint_spec()` never returns it.
+- an adapter and an executor in
+  `apps/ComfyUI_SGLDiffusion/executors/<model>.py`. The `ComfyUIModelAdapter`
+  subclass declares `model_types` and `pipeline_class_name` and adapts latent
+  layout and conditioning to `Req`; the `SGLDiffusionExecutor` subclass sets
+  `adapter_cls`.
+- an entry for the executor in `_load_executor_classes()` in
+  `core/generator.py`. `pipeline_class_dict` and `executor_class_dict` are
+  filled from each executor's adapter automatically; do not edit them.
+
+There is no separate `comfyui_*` pipeline class: `pipeline_class_name` names
+the native pipeline, which runs under `comfyui_mode`. That mode loads only the
+transformer, installs a pass-through scheduler, and by default builds
+`ComfyUILatentPreparationStage` + `DenoisingStage`. Define
+`create_comfyui_stages()` on the native pipeline only when it needs other
+stages, as MiniMax-H3, Qwen-Image 2.1 and LTX-2 do.
 
 The deciding question is not model size or modality — it is whether ComfyUI's
 sampler can drive the model's loop unchanged. If reproducing the conditioning
@@ -639,7 +658,7 @@ BCG validation must prove all of the following:
 - warmup logs `[Diffusion BCG] captured`
 - serving logs no support disable, capture failure, or
   `serving signature MISSED`
-- lossless Eager and BCG artifacts are byte-identical for the same prompt,
+- exact Eager and BCG artifacts are byte-identical for the same prompt,
   seed, shape, steps, guidance, dtype, and topology
 - short/long prompts exercise every intended bucket and an over-limit prompt
   falls back deliberately
@@ -650,9 +669,11 @@ BCG validation must prove all of the following:
 
 For a non-bit-exact optimization, integrate through the request-scoped site
 framework under `sglang.kernels.ops.diffusion.sites`. Mark sites during model
-construction and let `QualityGatedFusion` mount them for both
-`quality="lossless"` and `quality="high"`; `quality="lossless"` must keep
-the original code path. A high-only sparse, caching, or other approximate
+construction, register the fusion in `_QUALITY_FUSION_HANDLERS`
+(`runtime/pipelines_core/stages/denoising.py`) with the lowest tier that may
+mount it (`lossless` when only rounding order or position changes, `high` when
+a precision drops), and let `QualityGatedFusion` mount it per request;
+`quality="exact"` must keep the original code path. A high-only sparse, caching, or other approximate
 path must remain outside this fusion gate.
 Eligibility must be all-or-nothing for coupled sites and fail closed on dtype,
 shape, layout, backend, BCG, or compile incompatibility. Add clean site-level
@@ -698,7 +719,7 @@ in the cleanup ledger.
 | LTX-2 / LTX-2.3 / LTX-2.5 | `runtime/pipelines/ltx_2_pipeline.py` | Video pipeline family with one-stage, two-stage, HQ, joint audio/video, and optional LTX-2.5 diffusion-decoder variants; prefer config/loader specialization over a new pipeline |
 | Helios | `runtime/pipelines/helios_pipeline.py` | Video pipeline family with custom denoising and decoding stages |
 | FireRed/JoyAI image edit | `runtime/pipelines/qwen_image.py`, `runtime/pipelines/joy_image.py` | FireRed reuses Qwen edit-plus config; JoyAI has its own edit pipeline |
-| Wan | `runtime/pipelines/wan_pipeline.py` | Uses `add_standard_ti2v_stages()` |
+| Wan | `runtime/pipelines/wan_pipeline.py` (T2V), `runtime/pipelines/wan_i2v_pipeline.py` (I2V) | T2V composes the standard text/latent/timestep/decoding helpers around a Wan progressive denoising stage; I2V uses `add_standard_ti2v_stages()` |
 | LingBot Video MoE 30B | `runtime/pipelines/lingbot_video_moe.py` | Uses a model-specific structured-JSON text-encoding stage, then standard latent/timestep preparation, denoising, and decoding |
 
 ### Native Task-Contract Style (coupled multimodal requests)
@@ -733,8 +754,9 @@ Before submitting, verify:
 - [ ] **BCG admission is complete or intentionally absent** — model ID,
   pipeline config, and model-specific padding contract agree
 - [ ] **BCG replay is proven when enabled** — capture marker present, no
-  signature miss/fallback, and lossless artifact hash is exact
-- [ ] **Quality fast paths are request-scoped** — lossless remains untouched;
+  signature miss/fallback, and the exact-tier artifact hash matches
+  byte-for-byte
+- [ ] **Quality fast paths are request-scoped** — exact remains untouched;
   high-quality sites fail closed and have guard/parity tests
 - [ ] **Performance evidence is controlled** — same-GPU repeated e2e, profile,
   generated-media comparison, and task-owned weight cleanup ledger

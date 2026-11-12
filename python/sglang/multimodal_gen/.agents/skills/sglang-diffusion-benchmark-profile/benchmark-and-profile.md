@@ -301,6 +301,7 @@ Use the preset categories this way:
 
 | Preset | Model | Nightly | Notes |
 | --- | --- | --- | --- |
+| `anima` | `circlestone-labs/Anima-Base-v1.0-Diffusers` | Yes: `anima_base_t2i_1024` | Prompt, 1024x1024, seed 42, 1 GPU, `--performance-mode speed`; no explicit steps/guidance override |
 | `flux` | `black-forest-labs/FLUX.1-dev` | Yes: `flux1_dev_t2i_1024` | Prompt, 1024x1024, seed 42, 2 GPUs, TP size 2, resident DiT; no explicit steps/guidance override |
 | `flux2` | `black-forest-labs/FLUX.2-dev` | Yes: `flux2_dev_t2i_1024` | Prompt, 1024x1024, seed 42, 2 GPUs, TP size 2, resident DiT; no explicit steps/guidance override |
 | `qwen` | `Qwen/Qwen-Image-2512` | Yes: `qwen_image_2512_t2i_1024` | Prompt, 1024x1024, seed 42, 2 GPUs, TP size 2; no explicit steps/guidance override |
@@ -670,10 +671,9 @@ some generation failures are reported through the response payload without a
 nonzero process exit.
 
 For `quality=exact`, compare saved artifact hashes and require byte equality
-for a claimed lossless fast path or BCG change. For `quality=lossless` and
-`quality=high`, keep the
-lossless artifact as ground truth and report both aggregate and worst-frame
-SSIM/PSNR. Repository defaults are SSIM 0.95 / PSNR 28 dB for images and SSIM
+for a claimed bit-exact (exact-tier) fast path or BCG change. For
+`quality=lossless` and `quality=high`, keep the exact artifact as ground truth
+and report both aggregate and worst-frame SSIM/PSNR. Repository defaults are SSIM 0.95 / PSNR 28 dB for images and SSIM
 0.92 / PSNR 24 dB for videos; checked-in model/hardware consistency metadata
 may override them. Always inspect the image or a start/middle/end video contact
 sheet in addition to scalar metrics.
@@ -829,7 +829,7 @@ This skill intentionally stops here. It tells you whether you are looking at:
 - [ ] `compare_perf.py` table generated
 - [ ] one representative `torch.profiler` trace saved
 - [ ] hotspot classified against `existing-fast-paths.md`
-- [ ] lossless artifact hash is exact; lossless/high aggregate and worst-frame SSIM/PSNR pass the checked-in threshold
+- [ ] exact artifact hash is byte-identical; lossless/high aggregate and worst-frame SSIM/PSNR pass the checked-in threshold
 - [ ] reference image or start/middle/end video contact sheet checked visually
 - [ ] any PR claim has repeated saved-request e2e improvement >= 1.5%
 - [ ] task-owned checkpoint cache cleaned and ledger shows zero residual weight files
