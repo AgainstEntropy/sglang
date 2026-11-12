@@ -91,6 +91,28 @@ class TestPrecisionVariantSelection(unittest.TestCase):
 
         self.assertEqual(selected, [str(shard)])
 
+    def test_missing_shard_error_names_the_hub_repo_not_the_component(self):
+        """The re-download hint must name the repo, not the component folder."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            component = Path(tmpdir) / "models--org--repo/snapshots/abc/transformer"
+            component.mkdir(parents=True)
+            (component / "model.safetensors.index.json").write_text(
+                '{"weight_map":{"weight":"model-00001-of-00001.safetensors"}}'
+            )
+
+            with patch(
+                "sglang.multimodal_gen.runtime.loader.utils."
+                "_try_redownload_missing_shards",
+                return_value=False,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    _list_safetensors_files(str(component))
+
+        self.assertIn(
+            "hf download org/repo --revision abc --include 'transformer/*'",
+            str(ctx.exception),
+        )
+
     def test_checkpoint_bytes_counts_only_selected_family(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir)
