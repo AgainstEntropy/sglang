@@ -25,7 +25,6 @@ from sglang.multimodal_gen.runtime.loader.utils import (
 from sglang.multimodal_gen.runtime.loader.weight_load_plan import WeightLoadPlan
 from sglang.multimodal_gen.runtime.loader.weight_readers import (
     FALLBACK_READER,
-    RunaiStreamerReader,
     select_weight_reader,
 )
 from sglang.multimodal_gen.runtime.loader.weight_readers.runai_streamer import (
@@ -219,7 +218,6 @@ def _raise_if_duplicate_safetensors_keys(
 def safetensors_weights_iterator(
     hf_weights_files: list[str],
     to_cpu: bool = True,
-    use_runai_model_streamer: bool | None = None,
     key_filter: Callable[[str], bool] | None = None,
     clone_streamed_tensors: bool = True,
     weight_load_plan: WeightLoadPlan | None = None,
@@ -235,13 +233,7 @@ def safetensors_weights_iterator(
     else:
         device = "cpu" if to_cpu else str(get_local_torch_device())
     requested = None
-    if use_runai_model_streamer is not None:
-        requested = (
-            RunaiStreamerReader.name
-            if use_runai_model_streamer
-            else FALLBACK_READER.name
-        )
-    elif to_cpu:
+    if to_cpu:
         # A host-bound load keeps the checkpoint mapping: mapped pages are the
         # zero-copy optimum there, and everything downstream that budgets host
         # memory (layerwise offload, pinning, the mapped-weight gate) assumes

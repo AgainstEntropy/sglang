@@ -727,9 +727,7 @@ class ComponentLoader(ABC):
             "No specific loader found for component type: %s. Using generic loader.",
             loader_type,
         )
-        loader = GenericComponentLoader(
-            transformers_or_diffusers, component_architecture
-        )
+        loader = GenericComponentLoader(component_architecture=component_architecture)
         loader.component_type = structural_component_name
         return loader
 
@@ -1019,9 +1017,7 @@ class TokenizerLoader(ComponentLoader):
 class GenericComponentLoader(ComponentLoader):
     """Generic loader for components that don't have a specific loader."""
 
-    def __init__(
-        self, library="transformers", component_architecture: str | None = None
-    ) -> None:
+    def __init__(self, component_architecture: str | None = None) -> None:
         super().__init__()
         self.component_architecture = component_architecture
 

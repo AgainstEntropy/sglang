@@ -482,8 +482,6 @@ class ServerArgsAutoTuner:
             return
 
         layerwise_components: list[str] = []
-        if args.dit_layerwise_offload:
-            layerwise_components.append(LAYERWISE_OFFLOAD_DIT_GROUP)
 
         changed: list[str] = []
         if (

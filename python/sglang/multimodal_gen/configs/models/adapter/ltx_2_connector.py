@@ -51,8 +51,6 @@ class LTX2ConnectorArchConfig(AdapterArchConfig):
     audio_gated_attn: bool = False
 
     def __post_init__(self) -> None:
-        super().__post_init__()
-
         if self.per_modality_projections:
             self.feature_extractor_in_features = (
                 self.caption_channels * self.text_proj_in_factor

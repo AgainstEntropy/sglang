@@ -489,11 +489,7 @@ class TestCheckpointReadFailure(unittest.TestCase):
                         wraps=safe_open,
                     ):
                         with self.assertRaises(RuntimeError):
-                            next(
-                                safetensors_weights_iterator(
-                                    [str(path)], use_runai_model_streamer=False
-                                )
-                            )
+                            next(safetensors_weights_iterator([str(path)]))
 
                     self.assertTrue(
                         path.exists(), "loader removed the requested checkpoint"
@@ -502,11 +498,7 @@ class TestCheckpointReadFailure(unittest.TestCase):
                     self.assertEqual(blob.read_bytes(), original)
                     self.assertEqual(other_snapshot.read_bytes(), original)
                     if error is not None:
-                        loaded = dict(
-                            safetensors_weights_iterator(
-                                [str(path)], use_runai_model_streamer=False
-                            )
-                        )
+                        loaded = dict(safetensors_weights_iterator([str(path)]))
                         torch.testing.assert_close(loaded["weight"], torch.ones(2))
 
 

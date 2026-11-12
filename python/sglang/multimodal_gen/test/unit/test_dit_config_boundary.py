@@ -2,6 +2,7 @@ from dataclasses import fields
 
 import torch
 
+from sglang.multimodal_gen.configs.models.adapter.base import AdapterArchConfig
 from sglang.multimodal_gen.configs.models.bridges.mova_dual_tower import (
     MOVADualTowerArchConfig,
 )
@@ -37,11 +38,12 @@ def test_dit_runtime_keeps_architecture_and_component_config_separate():
 
 
 def test_dit_arch_config_excludes_runtime_capabilities():
-    field_names = {field.name for field in fields(DiTArchConfig)}
+    for arch_config_cls in (DiTArchConfig, AdapterArchConfig):
+        field_names = {field.name for field in fields(arch_config_cls)}
 
-    assert "_fsdp_shard_conditions" not in field_names
-    assert "_compile_conditions" not in field_names
-    assert "_supported_attention_backends" not in field_names
+        assert "_fsdp_shard_conditions" not in field_names
+        assert "_compile_conditions" not in field_names
+        assert "_supported_attention_backends" not in field_names
 
 
 def test_mova_bridge_declares_runtime_capabilities_on_model_class():
