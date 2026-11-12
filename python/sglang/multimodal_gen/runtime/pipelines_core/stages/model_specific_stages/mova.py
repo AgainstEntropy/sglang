@@ -36,6 +36,9 @@ from sglang.multimodal_gen.runtime.distributed.sp_shard_utils import (
     tail_attn_meta,
 )
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
+from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
+    ComponentUse,
+)
 from sglang.multimodal_gen.runtime.models.bridges.mova_dual_tower import (
     rope_cos_sin_cache,
 )
@@ -44,13 +47,6 @@ from sglang.multimodal_gen.runtime.models.bridges.mova_dual_tower import (
 # Import from mova_video_dit where it's defined (mova_audio_dit re-exports it)
 from sglang.multimodal_gen.runtime.models.dits.mova_video_dit import (
     sinusoidal_embedding_1d,
-)
-
-# Create aliases for backward compatibility
-video_sinusoidal_embedding_1d = sinusoidal_embedding_1d
-audio_sinusoidal_embedding_1d = sinusoidal_embedding_1d
-from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
-    ComponentUse,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import OutputBatch, Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages.base import (
@@ -807,13 +803,13 @@ class MOVADenoisingStage(PipelineStage):
         )
         with autocast_ctx:
             visual_t = visual_dit.time_embedding(
-                video_sinusoidal_embedding_1d(visual_dit.freq_dim, timestep)
+                sinusoidal_embedding_1d(visual_dit.freq_dim, timestep)
             )
             visual_t_mod, _ = visual_dit.time_projection(visual_t)
             visual_t_mod = visual_t_mod.unflatten(1, (6, visual_dit.dim))
 
             audio_t = self.audio_dit.time_embedding(
-                audio_sinusoidal_embedding_1d(self.audio_dit.freq_dim, audio_timestep)
+                sinusoidal_embedding_1d(self.audio_dit.freq_dim, audio_timestep)
             )
             audio_t_mod, _ = self.audio_dit.time_projection(audio_t)
             audio_t_mod = audio_t_mod.unflatten(1, (6, self.audio_dit.dim))

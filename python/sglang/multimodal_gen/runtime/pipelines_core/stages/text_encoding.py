@@ -133,16 +133,6 @@ def _text_encoder_max_length_is_fixed(
     return False
 
 
-def stack_tensors(name: str, tensors: list[torch.Tensor]) -> torch.Tensor:
-    base_shape = list(tensors[0].shape)
-    for tensor in tensors[1:]:
-        if list(tensor.shape) != base_shape:
-            raise ValueError(
-                f"Cannot stack {name} with differing shapes: {[list(t.shape) for t in tensors]}"
-            )
-    return torch.stack(tensors, dim=0)
-
-
 class TextEncodingStage(ConditionEncodingStage):
     """
     Stage for encoding text prompts into embeddings for diffusion models.
@@ -504,14 +494,11 @@ class TextEncodingStage(ConditionEncodingStage):
         server_args: ServerArgs,
         encoder_index: int | list[int] | None = None,
         return_attention_mask: bool = False,
-        return_type: str = "list",  # one of: "list", "dict", "stack"
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
         max_length: int | None = None,
         truncation: bool | None = None,
         padding: bool | str | None = None,
-        return_overflowing_tokens=None,
-        return_length=None,
     ):
         """
         Encode plain text using selected text encoder(s) and return embeddings.
@@ -524,9 +511,6 @@ class TextEncodingStage(ConditionEncodingStage):
             encoder_index: Encoder selector by index. Accepts an int or list of ints.
             return_attention_mask: If True, also return attention masks for each
                 selected encoder.
-            return_type: "list" (default) returns a list aligned with selection;
-                "dict" returns a dict keyed by encoder index as a string; "stack" stacks along a
-                new first dimension (requires matching shapes).
             device: Optional device override for inputs; defaults to local torch device.
             dtype: Optional dtype to cast returned embeddings to.
             max_length: Optional per-call tokenizer override.
@@ -534,12 +518,9 @@ class TextEncodingStage(ConditionEncodingStage):
             padding: Optional per-call tokenizer override.
 
         Returns:
-            Depending on return_type and return_attention_mask:
-            - list: (embeds, pooler_outputs) or
-              (embeds, attention_masks, pooler_outputs, embeds_masks, seq_lens)
-            - dict: Dict[str, Tensor] or (Dict[str, Tensor], Dict[str, Tensor])
-            - stack: Tensor of shape [num_encoders, ...] or a tuple with stacked
-              attention masks
+            Lists aligned with the selected encoders: (embeds, pooler_outputs), or
+            (embeds, attention_masks, pooler_outputs, embeds_masks, seq_lens) when
+            return_attention_mask is True.
 
             `embeds_masks` and `seq_lens` are aligned with postprocessed
             embeddings for variable-length text conditioning.
@@ -584,11 +565,6 @@ class TextEncodingStage(ConditionEncodingStage):
         postprocess_funcs = server_args.pipeline_config.postprocess_text_funcs
         text_encoder_extra_args = server_args.pipeline_config.text_encoder_extra_args
         encoder_cfgs = server_args.pipeline_config.text_encoder_configs
-
-        if return_type not in ("list", "dict", "stack"):
-            raise ValueError(
-                f"Invalid return_type '{return_type}'. Expected one of: 'list', 'dict', 'stack'"
-            )
 
         target_device = device if device is not None else get_local_torch_device()
 
@@ -806,44 +782,15 @@ class TextEncodingStage(ConditionEncodingStage):
                 embeds_masks_list.append(embeds_mask)
                 seq_lens_list.append(seq_lens)
 
-        # Shape results according to return_type
-        if return_type == "list":
-            if return_attention_mask:
-                return (
-                    embeds_list,
-                    attn_masks_list,
-                    pooled_embeds_list,
-                    embeds_masks_list,
-                    seq_lens_list,
-                )
-            return embeds_list, pooled_embeds_list
-
-        if return_type == "dict":
-            key_strs = [str(i) for i in indices]
-            embeds_dict = {k: v for k, v in zip(key_strs, embeds_list, strict=False)}
-            if return_attention_mask:
-                attn_dict = {
-                    k: v for k, v in zip(key_strs, attn_masks_list, strict=False)
-                }
-                return embeds_dict, attn_dict
-            return embeds_dict
-
-        # return_type == "stack"
-        stacked_embeds = stack_tensors("embeddings", embeds_list)
         if return_attention_mask:
-            stackable_masks = [
-                (
-                    mask
-                    if mask is not None
-                    else torch.ones(
-                        embed.shape[:2], device=embed.device, dtype=torch.long
-                    )
-                )
-                for embed, mask in zip(embeds_list, attn_masks_list, strict=True)
-            ]
-            stacked_masks = stack_tensors("attention masks", stackable_masks)
-            return stacked_embeds, stacked_masks
-        return stacked_embeds
+            return (
+                embeds_list,
+                attn_masks_list,
+                pooled_embeds_list,
+                embeds_masks_list,
+                seq_lens_list,
+            )
+        return embeds_list, pooled_embeds_list
 
     def verify_output(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
         """Verify text encoding stage outputs."""

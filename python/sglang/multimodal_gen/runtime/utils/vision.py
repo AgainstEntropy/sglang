@@ -316,12 +316,12 @@ def get_default_height_width(
 
 
 def resize(
-    image: PIL.Image.Image | np.ndarray | torch.Tensor,
+    image: PIL.Image.Image,
     height: int,
     width: int,
     resize_mode: str = "default",  # only "default" is supported
     resample: str = "lanczos",
-) -> PIL.Image.Image | np.ndarray | torch.Tensor:
+) -> PIL.Image.Image:
     """Resize a PIL image to (width, height) with the given resample filter,
     ignoring the aspect ratio. Only ``resize_mode="default"`` is supported."""
     if resize_mode != "default" and not isinstance(image, PIL.Image.Image):

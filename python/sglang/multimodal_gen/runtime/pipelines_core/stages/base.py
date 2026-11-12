@@ -460,10 +460,3 @@ class PipelineStage(StageDedupMixin, ABC):
             The updated batch information after this stage's processing.
         """
         raise NotImplementedError
-
-    def backward(
-        self,
-        batch: Req,
-        server_args: ServerArgs,
-    ) -> Req:
-        raise NotImplementedError
