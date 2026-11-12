@@ -1160,10 +1160,7 @@ class GPUWorker(GPUWorkerPostTrainingMixin):
         ):
             return
 
-        if (
-            os.environ.get("SGLANG_DIFFUSION_SYNC_STAGE_PROFILING", "0") == "1"
-            and _device_initialized()
-        ):
+        if envs.SGLANG_DIFFUSION_SYNC_STAGE_PROFILING and _device_initialized():
             _device_module().synchronize()
         start_time = time.perf_counter()
         output_batch.output = [
@@ -1171,10 +1168,7 @@ class GPUWorker(GPUWorkerPostTrainingMixin):
             for output in output_batch.output
         ]
         if output_batch.metrics is not None:
-            if (
-                os.environ.get("SGLANG_DIFFUSION_SYNC_STAGE_PROFILING", "0") == "1"
-                and _device_initialized()
-            ):
+            if envs.SGLANG_DIFFUSION_SYNC_STAGE_PROFILING and _device_initialized():
                 _device_module().synchronize()
             output_batch.metrics.record_stage(
                 "GPUWorker.frame_materialize_for_return",

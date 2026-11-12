@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import os
 
 import aiter
 import torch
@@ -11,6 +10,7 @@ import triton
 import triton.language as tl
 from aiter.jit.core import ENABLE_CK as _AITER_ENABLE_CK
 
+from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.runtime.layers.attention.backends.attention_backend import (
     AttentionBackend,
     AttentionImpl,
@@ -25,7 +25,7 @@ from sglang.multimodal_gen.runtime.platforms.aiter import (
 
 logger = logging.getLogger(__name__)
 
-_use_fp8_attn = os.environ.get("SGLANG_DIFFUSION_AITER_FP8_ATTN", "0") == "1"
+_use_fp8_attn = envs.SGLANG_DIFFUSION_AITER_FP8_ATTN
 _fp8_dtype = torch.float8_e4m3fn
 
 # fmha_fwd_hd128_fp8_gfx950 ASM kernel. Support full MHA with q/k/v head_dim == 128 -- e.g., Wan 2.2 self- and cross-attention.

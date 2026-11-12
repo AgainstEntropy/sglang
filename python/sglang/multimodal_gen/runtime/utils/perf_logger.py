@@ -306,7 +306,7 @@ class StageProfiler:
         queued work. Opt-in diagnostics only: the flag defaults off.
         """
         if (
-            os.environ.get("SGLANG_DIFFUSION_SYNC_STAGE_PROFILING", "0") == "1"
+            envs.SGLANG_DIFFUSION_SYNC_STAGE_PROFILING
             and torch.get_device_module().is_available()
         ):
             torch.get_device_module().synchronize()

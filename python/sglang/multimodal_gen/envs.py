@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     SGLANG_DIFFUSION_TEST_FORCE_HOST_AVAILABLE_GIB: float | None = None
     SGLANG_DIFFUSION_TEST_CAP_DEVICE_MEMORY_GIB: float | None = None
     SGLANG_DIFFUSION_STAGE_LOGGING: bool = False
+    SGLANG_DIFFUSION_SYNC_STAGE_PROFILING: bool = False
     SGLANG_DIFFUSION_DISABLE_AUTO_RESIDENCY: bool = False
     SGLANG_DIFFUSION_MINIMAX_H3_ADALN_GPU_PLANS: int = 64
     SGLANG_DIFFUSION_MINIMAX_H3_ADALN_FP32: bool = False
@@ -132,6 +133,7 @@ if TYPE_CHECKING:
     SGLANG_USE_ROCM_VAE_CONV2D: bool = False
     SGLANG_USE_ROCM_VAE_CONV2D_BF16: bool = False
     SGLANG_USE_ROCM_AITER_TGEMM: bool = False
+    SGLANG_DIFFUSION_AITER_FP8_ATTN: bool = False
 
 
 def get_default_cache_root() -> str:
@@ -305,6 +307,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If set, sgl_diffusion will enable stage logging, which will print the time
     # taken for each stage
     "SGLANG_DIFFUSION_STAGE_LOGGING": _lazy_bool("SGLANG_DIFFUSION_STAGE_LOGGING"),
+    # If set, synchronize the device at stage and step timing boundaries so
+    # recorded timings measure device time rather than host enqueue time
+    "SGLANG_DIFFUSION_SYNC_STAGE_PROFILING": _lazy_bool(
+        "SGLANG_DIFFUSION_SYNC_STAGE_PROFILING"
+    ),
     # Kill-switch for the warmup-calibrated auto residency promotion that runs
     # under `--performance-mode auto` with server warmup. Set to disable the
     # promotion without giving up the rest of the auto performance policy.
@@ -531,6 +538,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # ROCm: route unquantized bf16/fp16 linears through aiter tgemm, which picks
     # the backend per (M, N, K) from aiter's bf16_tuned_gemm CSVs
     "SGLANG_USE_ROCM_AITER_TGEMM": _lazy_bool("SGLANG_USE_ROCM_AITER_TGEMM"),
+    # ROCm: run DiT attention through the AITER FP8 kernel (gfx950, full MHA
+    # with head_dim 128); other shapes fall back to BF16. Only "1" enables it.
+    "SGLANG_DIFFUSION_AITER_FP8_ATTN": lambda: (
+        os.getenv("SGLANG_DIFFUSION_AITER_FP8_ATTN", "0") == "1"
+    ),
 }
 
 # Add cache-dit Secondary Transformer Env Vars via programmatic generation to reduce duplication

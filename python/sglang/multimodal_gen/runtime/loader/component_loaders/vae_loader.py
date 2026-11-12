@@ -166,8 +166,7 @@ def _should_use_channels_last_3d(
 
 
 def _channels_last_3d_overridden() -> bool:
-    override = os.getenv(VAE_CHANNELS_LAST_3D_ENV)
-    return override is not None and override.strip().lower() != "auto"
+    return envs.SGLANG_DIFFUSION_VAE_CHANNELS_LAST_3D.strip().lower() != "auto"
 
 
 def _channels_last_3d_prefix(server_args: ServerArgs | None) -> str:
