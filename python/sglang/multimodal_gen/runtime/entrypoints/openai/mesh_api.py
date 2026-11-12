@@ -170,7 +170,7 @@ async def create_mesh(
                 detail="Field 'image' or 'url' is required for mesh generation",
             )
 
-        uploads_dir = os.path.join("outputs", "uploads")
+        uploads_dir = server_args.input_save_path or os.path.join("outputs", "uploads")
         try:
             input_path = await save_first_input_image(
                 image_list, request_id, uploads_dir
@@ -202,7 +202,9 @@ async def create_mesh(
 
             if payload.get("input_image"):
                 img_src = payload.pop("input_image")
-                uploads_dir = os.path.join("outputs", "uploads")
+                uploads_dir = server_args.input_save_path or os.path.join(
+                    "outputs", "uploads"
+                )
                 os.makedirs(uploads_dir, exist_ok=True)
                 input_path = await save_image_to_path(
                     img_src,

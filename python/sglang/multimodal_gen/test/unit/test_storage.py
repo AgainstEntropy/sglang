@@ -236,6 +236,45 @@ def test_env_configured_storage_uploads_and_cleans_up(tmp_path, monkeypatch):
     ]
 
 
+def test_env_storage_without_region_uses_boto3_resolved_region(tmp_path, monkeypatch):
+    """With SGLANG_S3_REGION_NAME unset, the URL names the region boto3 uploaded to."""
+    monkeypatch.setenv("SGLANG_CLOUD_STORAGE_TYPE", "s3")
+    monkeypatch.setenv("SGLANG_S3_BUCKET_NAME", "eu-bucket")
+    monkeypatch.delenv("SGLANG_S3_REGION_NAME", raising=False)
+    monkeypatch.delenv("SGLANG_S3_ENDPOINT_URL", raising=False)
+
+    def fake_client(service, **kwargs):
+        assert kwargs["region_name"] is None
+        return SimpleNamespace(
+            upload_file=lambda *args, **kw: None,
+            meta=SimpleNamespace(region_name="eu-west-1"),
+        )
+
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client))
+
+    storage = CloudStorage()
+    file_path = _create_temp_file(tmp_path, "eu.png")
+    url = asyncio.run(storage.upload_file(file_path, "eu.png"))
+
+    assert url == "https://eu-bucket.s3.eu-west-1.amazonaws.com/eu.png"
+
+
+def test_env_storage_without_bucket_logs_error(monkeypatch):
+    """SGLANG_CLOUD_STORAGE_TYPE=s3 without a bucket disables storage with an error log."""
+    monkeypatch.setenv("SGLANG_CLOUD_STORAGE_TYPE", "s3")
+    monkeypatch.delenv("SGLANG_S3_BUCKET_NAME", raising=False)
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=None))
+    errors = []
+    monkeypatch.setattr(
+        storage_mod, "logger", SimpleNamespace(error=lambda msg, *a: errors.append(msg))
+    )
+
+    storage = CloudStorage()
+
+    assert not storage.is_enabled()
+    assert len(errors) == 1 and "SGLANG_S3_BUCKET_NAME" in errors[0]
+
+
 @pytest.mark.parametrize("kind", ["single", "many"])
 @pytest.mark.parametrize("upload_fails", [False, True])
 def test_cancelled_upload_finishes_reading_before_request_cleanup(

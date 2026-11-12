@@ -1660,9 +1660,13 @@ class ServerArgs(DisaggServerArgsMixin):
                 )
 
     def _adjust_parallelism(self):
+        if self.dp_size < 1:
+            raise ValueError("--dp-size must be a natural number")
+
         sp_unspecified = self.sp_degree is None
         ulysses_unspecified = self.ulysses_degree is None
         ring_unspecified = self.ring_degree is None
+        kv_gather_unspecified = self.kv_gather_degree is None
         cfg_unspecified = self.enable_cfg_parallel is None
 
         if self.tp_size is None:
@@ -1673,7 +1677,7 @@ class ServerArgs(DisaggServerArgsMixin):
             self.num_gpus = self.tp_size
 
         if self.hsdp_shard_dim is None:
-            self.hsdp_shard_dim = self.num_gpus
+            self.hsdp_shard_dim = self.num_gpus // self.hsdp_replicate_dim
 
         # --cfg-parallel-size takes precedence over --enable-cfg-parallel bool.
         if self.cfg_parallel_degree is not None:
@@ -1704,6 +1708,7 @@ class ServerArgs(DisaggServerArgsMixin):
                     and sp_unspecified
                     and ulysses_unspecified
                     and ring_unspecified
+                    and kv_gather_unspecified
                     and self._model_default_uses_cfg()
                 ):
                     self.cfg_parallel_degree = auto_cfg_parallel_degree
@@ -2610,7 +2615,7 @@ class ServerArgs(DisaggServerArgsMixin):
             "--hsdp-shard-dim",
             type=int,
             default=None,
-            help="The data parallelism shards. Defaults to num_gpus if not specified.",
+            help="The data parallelism shards. Defaults to num_gpus // hsdp_replicate_dim if not specified.",
         )
         parser.add_argument(
             "--dist-timeout",
@@ -4180,9 +4185,6 @@ class ServerArgs(DisaggServerArgsMixin):
             raise ValueError(
                 f"num_gpus ({self.num_gpus}) must be divisible by dp_size ({self.dp_size})"
             )
-
-        if self.dp_size < 1:
-            raise ValueError("--dp-size must be a natural number")
 
         if self.dp_size > 1 and self.disagg_role != RoleType.MONOLITHIC:
             raise ValueError(

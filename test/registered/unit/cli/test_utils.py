@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -76,6 +78,22 @@ class TestDiffusionModelDetection(CustomTestCase):
                 mock_download.side_effect = _hub_error(error_type, 404)
                 self.assertFalse(get_is_diffusion_model("test/llm-model"))
         mock_hf_api.assert_not_called()
+
+
+class TestGenerateConfigModelPath(CustomTestCase):
+    @patch("sglang.cli.generate.get_is_diffusion_model", return_value=False)
+    def test_generate_takes_model_path_from_config(self, mock_is_diffusion):
+        """`sglang generate --config c.yaml` uses the config's model_path when no flag is set."""
+        from sglang.cli.generate import generate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.yaml")
+            with open(config_path, "w") as f:
+                f.write("model_path: org/config-model\nprompt: hi\n")
+            with self.assertRaisesRegex(Exception, "not yet supported"):
+                generate(None, ["--config", config_path])
+
+        mock_is_diffusion.assert_called_once_with("org/config-model")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload_co
     RESIDENCY_LIFETIME_PERMANENT,
     RESIDENCY_POLICY_LEADING,
     RESIDENCY_POLICY_STRIDED,
+    cpu_offload_component_matches,
 )
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
@@ -3199,3 +3200,11 @@ def test_layerwise_breakable_graph_preserves_copies_and_event_lifetimes():
         runner.reset()
         manager.release_all()
         manager.remove_forward_hooks()
+
+
+def test_cpu_offload_group_aliases_combine():
+    """Every group alias in --cpu-offload-components selects its components, not just the first."""
+    assert cpu_offload_component_matches("text_encoder_2", ["dit", "text_encoder"])
+    assert cpu_offload_component_matches("video_vae", ["text_encoder", "vae"])
+    assert cpu_offload_component_matches("transformer", ["vae", "dit"])
+    assert not cpu_offload_component_matches("video_vae", ["dit", "text_encoder"])

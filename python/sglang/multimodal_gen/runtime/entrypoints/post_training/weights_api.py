@@ -86,6 +86,15 @@ async def update_weights_from_tensor(request: Request):
             status_code=500,
         )
 
+    if response.output is None:
+        return orjson_response(
+            {
+                "success": False,
+                "message": response.error or "Unknown status",
+            },
+            status_code=500,
+        )
+
     result = response.output
     return orjson_response(
         result,
@@ -130,6 +139,15 @@ async def update_weights_from_tensor_checker(request: Request):
             status_code=500,
         )
 
+    if response.output is None:
+        return orjson_response(
+            {
+                "success": False,
+                "message": response.error or "Unknown status",
+            },
+            status_code=500,
+        )
+
     result = response.output
     success = result.get("success", False)
     message = result.get("message", "Unknown status")
@@ -151,6 +169,11 @@ async def get_weights_checksum(request: Request):
         response = await async_scheduler_client.forward(req)
     except Exception as e:
         return orjson_response({"error": str(e)}, status_code=500)
+
+    if response.output is None:
+        return orjson_response(
+            {"error": response.error or "Unknown status"}, status_code=500
+        )
 
     return orjson_response(response.output, status_code=200)
 

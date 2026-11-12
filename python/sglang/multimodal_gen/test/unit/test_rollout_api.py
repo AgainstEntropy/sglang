@@ -1,8 +1,12 @@
-"""Unit tests for the rollout generate API (serialization, io_struct, rollout_api)."""
+"""Unit tests for the post-training HTTP APIs (serialization, io_struct, rollout_api, weights_api)."""
 
+import asyncio
 import types
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
+import msgspec
+import orjson
 import torch
 
 from sglang.multimodal_gen.runtime.entrypoints.post_training.utils import (
@@ -414,6 +418,77 @@ class TestBuildSamplingKwargs(unittest.TestCase):
         req = Req(sampling_params=sp)
         self.assertEqual(req.rollout_sde_step_indices, [0, 2])
         self.assertEqual(req.rollout_return_step_indices, [1, 3])
+
+
+class TestRolloutGenerateSeed(unittest.TestCase):
+    def test_omitted_seed_echoes_resolved_seed(self):
+        """A rollout request without a seed gets a 200 that echoes the seed it ran with."""
+        from sglang.multimodal_gen.runtime.entrypoints.post_training import (
+            rollout_api,
+        )
+        from sglang.multimodal_gen.runtime.entrypoints.post_training.io_struct import (
+            RolloutRequest,
+        )
+
+        forward = AsyncMock(return_value=OutputBatch(output=torch.zeros(1, 2)))
+        with (
+            patch.object(rollout_api, "get_global_server_args", Mock()),
+            patch.object(
+                rollout_api,
+                "build_sampling_params",
+                Mock(return_value=types.SimpleNamespace(seed=42)),
+            ),
+            patch.object(rollout_api, "prepare_request", Mock()),
+            patch.object(rollout_api.async_scheduler_client, "forward", forward),
+        ):
+            response = asyncio.run(
+                rollout_api.rollout_generate(
+                    RolloutRequest(prompt="a cat", rollout=False)
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(msgspec.msgpack.decode(response.body)[0]["seed"], 42)
+
+
+class TestWeightsApiSchedulerError(unittest.TestCase):
+    def test_scheduler_error_is_returned(self):
+        """A scheduler-side error without output is a 500 carrying the scheduler's message."""
+        from sglang.multimodal_gen.runtime.entrypoints.post_training import (
+            weights_api,
+        )
+
+        cases = (
+            (
+                weights_api.update_weights_from_tensor,
+                {"serialized_named_tensors": ["x"]},
+                {"success": False, "message": "boom"},
+            ),
+            (
+                weights_api.update_weights_from_tensor_checker,
+                {
+                    "target_module": "transformer",
+                    "expected_named_tensors_sha256": {"w": "0"},
+                },
+                {"success": False, "message": "boom"},
+            ),
+            (
+                weights_api.get_weights_checksum,
+                {"module_names": ["transformer"]},
+                {"error": "boom"},
+            ),
+        )
+        forward = AsyncMock(return_value=OutputBatch(error="boom"))
+        for handler, body, expected in cases:
+            with (
+                self.subTest(handler=handler.__name__),
+                patch.object(weights_api.async_scheduler_client, "forward", forward),
+            ):
+                request = types.SimpleNamespace(json=AsyncMock(return_value=body))
+                response = asyncio.run(handler(request))
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(orjson.loads(response.body), expected)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,22 @@ def get_pipeline_class_name(extra_argv):
         elif any(arg.startswith(f"{flag}=") for flag in pipeline_flags):
             return arg.split("=", 1)[1]
 
+    config = _read_cli_config(extra_argv)
+    if config is not None:
+        return config.get("pipeline_class_name") or config.get("pipeline")
+    return None
+
+
+def try_get_config_model_path(extra_argv) -> str | None:
+    """Return the model path set in a JSON/YAML ``--config`` file, if any."""
+    config = _read_cli_config(extra_argv)
+    if config is not None:
+        return config.get("model_path") or config.get("model")
+    return None
+
+
+def _read_cli_config(extra_argv) -> dict | None:
+    """Pre-parse a JSON/YAML ``--config`` file; malformed configs are left for the full parser."""
     config_path = None
     for i, arg in enumerate(extra_argv):
         if arg == "--config" and i + 1 < len(extra_argv):
@@ -193,24 +209,22 @@ def get_pipeline_class_name(extra_argv):
         if arg.startswith("--config="):
             config_path = arg.split("=", 1)[1]
             break
-    if config_path:
-        try:
-            with open(config_path) as f:
-                if config_path.endswith(".json"):
-                    config = json.load(f)
-                elif config_path.endswith((".yaml", ".yml")):
-                    import yaml
+    if not config_path:
+        return None
+    try:
+        with open(config_path) as f:
+            if config_path.endswith(".json"):
+                config = json.load(f)
+            elif config_path.endswith((".yaml", ".yml")):
+                import yaml
 
-                    config = yaml.safe_load(f)
-                else:
-                    return None
-            if isinstance(config, dict):
-                return config.get("pipeline_class_name") or config.get("pipeline")
-        except (ImportError, OSError, ValueError) as exc:
-            logger.debug(
-                "Failed to pre-parse pipeline class from %s: %s", config_path, exc
-            )
-    return None
+                config = yaml.safe_load(f)
+            else:
+                return None
+    except (ImportError, OSError, ValueError) as exc:
+        logger.debug("Failed to pre-parse %s: %s", config_path, exc)
+        return None
+    return config if isinstance(config, dict) else None
 
 
 @lru_cache(maxsize=1)

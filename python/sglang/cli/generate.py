@@ -6,6 +6,8 @@ from sglang.cli.utils import (
     get_model_path,
     get_pipeline_class_name,
     is_registered_native_pipeline,
+    try_get_config_model_path,
+    try_get_model_path,
 )
 
 
@@ -25,7 +27,11 @@ def generate(args, extra_argv):
         parser.parse_args(extra_argv)
         return
 
-    model_path = get_model_path(extra_argv)
+    model_path = (
+        try_get_model_path(extra_argv)
+        or try_get_config_model_path(extra_argv)
+        or get_model_path(extra_argv)
+    )
     # An explicit --pipeline-class-name naming a registered native diffusion
     # pipeline (e.g. FLUX.3's Flux3ImagePipeline) is treated as a diffusion signal even
     # when model_path itself is not auto-detectable (bare .safetensors, no

@@ -4,7 +4,9 @@
 import os
 import subprocess
 import sys
+import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -21,6 +23,7 @@ from sglang.multimodal_gen.runtime.disaggregation.roles import RoleType
 from sglang.multimodal_gen.runtime.managers.gpu_worker import GPUWorker
 from sglang.multimodal_gen.runtime.managers.scheduler import (
     Scheduler,
+    _DeferredOutput,
     _SequentiallyReturnedOutputs,
 )
 from sglang.multimodal_gen.runtime.observability import metrics as metrics_module
@@ -136,6 +139,61 @@ def test_scheduler_counts_original_requests_and_cleans_up(
         )
     assert sample(registry, "num_running_reqs") == 0
     assert sample(registry, "num_queue_reqs") == 0
+    assert not collector._requests
+
+
+def test_deferred_save_request_is_counted_by_its_reply(metrics):
+    """With --async-output-save, a deferred-save request is counted once, by its real status."""
+    collector, registry = metrics
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.server_args = SimpleNamespace(pipeline_config=PipelineConfig())
+    scheduler.worker = SimpleNamespace(release_cache_if_idle=Mock())
+    scheduler._async_output_save = True
+    scheduler._finalize_executor = ThreadPoolExecutor(max_workers=1)
+    scheduler._inflight_finalizes = deque()
+    scheduler.metrics = collector
+    scheduler._disagg_role = RoleType.MONOLITHIC
+    scheduler._disagg_metrics = None
+    scheduler.receiver = None
+    scheduler.context = Mock()
+    scheduler.waiting_queue = deque()
+    scheduler._running = True
+    scheduler._consecutive_error_count = 0
+    scheduler._max_consecutive_errors = 1
+    scheduler._log_warmup_result = Mock()
+    scheduler._log_batch_metrics_summary = Mock()
+    scheduler._cleanup_disagg = Mock()
+    scheduler.return_result = Mock()
+    scheduler.process_received_reqs_with_req_based_warmup = lambda reqs: reqs
+    req = Req(sampling_params=SamplingParams(prompt="test"))
+    scheduler.recv_reqs = lambda: [(None, req)]
+    scheduler.get_next_batch_to_run = lambda: [(None, req)]
+    # hold the save until the event loop has left its per-batch finally
+    loop_done = threading.Event()
+    drain = scheduler._drain_deferred_replies
+
+    def drain_after_loop():
+        loop_done.set()
+        drain()
+
+    scheduler._drain_deferred_replies = drain_after_loop
+
+    def dispatch(items):
+        scheduler._running = False
+        return [
+            _DeferredOutput(
+                output_batch=OutputBatch(),
+                finalize=lambda: loop_done.wait(timeout=10),
+            )
+        ]
+
+    scheduler._dispatch_items = dispatch
+    scheduler.event_loop()
+
+    assert loop_done.is_set()
+    assert sample(registry, "requests_total", status="success", is_warmup="false") == 1
+    assert sample(registry, "requests_total", status="error", is_warmup="false") is None
+    assert sample(registry, "num_running_reqs") == 0
     assert not collector._requests
 
 

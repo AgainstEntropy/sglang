@@ -130,15 +130,24 @@ def cpu_offload_component_matches(
         return True
     if component_name in selected_component_names:
         return True
-    if LAYERWISE_OFFLOAD_DIT_GROUP in selected_component_names:
-        return is_legacy_dit_offload_component_name(component_name)
-    if LAYERWISE_OFFLOAD_TEXT_ENCODER_GROUP in selected_component_names:
-        return is_text_encoder_component_name(component_name)
-    if LAYERWISE_OFFLOAD_IMAGE_ENCODER_GROUP in selected_component_names:
-        return is_legacy_image_encoder_offload_component_name(component_name)
-    if LAYERWISE_OFFLOAD_VAE_GROUP in selected_component_names:
-        return is_vae_component_name(component_name)
-    return False
+    return (
+        (
+            LAYERWISE_OFFLOAD_DIT_GROUP in selected_component_names
+            and is_legacy_dit_offload_component_name(component_name)
+        )
+        or (
+            LAYERWISE_OFFLOAD_TEXT_ENCODER_GROUP in selected_component_names
+            and is_text_encoder_component_name(component_name)
+        )
+        or (
+            LAYERWISE_OFFLOAD_IMAGE_ENCODER_GROUP in selected_component_names
+            and is_legacy_image_encoder_offload_component_name(component_name)
+        )
+        or (
+            LAYERWISE_OFFLOAD_VAE_GROUP in selected_component_names
+            and is_vae_component_name(component_name)
+        )
+    )
 
 
 def is_text_encoder_component_name(component_name: str) -> bool:

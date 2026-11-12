@@ -50,6 +50,7 @@ class DisaggMetrics:
         self._last_latency = 0.0
         self._max_latency = 0.0
         self._total_latency = 0.0
+        self._latency_count = 0
 
         self._completion_times: list[float] = []
         self._throughput_window_s = 60.0
@@ -73,6 +74,7 @@ class DisaggMetrics:
                 self._last_latency = latency
                 self._max_latency = max(self._max_latency, latency)
                 self._total_latency += latency
+                self._latency_count += 1
 
             self._completed += 1
             self._completion_times.append(now)
@@ -91,8 +93,11 @@ class DisaggMetrics:
         now = time.monotonic()
         with self._lock:
             self._prune_completion_times(now)
-            total = self._completed + self._failed
-            avg_latency = self._total_latency / total if total > 0 else 0.0
+            avg_latency = (
+                self._total_latency / self._latency_count
+                if self._latency_count
+                else 0.0
+            )
             rps = (
                 len(self._completion_times) / self._throughput_window_s
                 if self._completion_times

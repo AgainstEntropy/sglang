@@ -947,6 +947,7 @@ class ServerArgsAutoTuner:
             or args.sp_degree is not None
             or args.ulysses_degree is not None
             or args.ring_degree is not None
+            or args.kv_gather_degree is not None
             or args.enable_cfg_parallel is not None
         )
 

@@ -25,6 +25,9 @@ class CloudStorage:
 
         self.bucket_name = os.getenv("SGLANG_S3_BUCKET_NAME")
         if not self.bucket_name:
+            logger.error(
+                "SGLANG_CLOUD_STORAGE_TYPE=s3 requires SGLANG_S3_BUCKET_NAME; cloud storage is disabled."
+            )
             self.enabled = False
             return
 
@@ -39,7 +42,7 @@ class CloudStorage:
             region_name=region_name,
         )
         self.endpoint_url = endpoint_url
-        self.region_name = region_name
+        self.region_name = region_name or self.client.meta.region_name
 
     def is_enabled(self) -> bool:
         return self.enabled

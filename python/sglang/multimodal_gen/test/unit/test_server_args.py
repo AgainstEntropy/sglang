@@ -3630,6 +3630,69 @@ class TestKVGatherDegree(unittest.TestCase):
                     }
                 )
 
+    def test_explicit_degree_blocks_auto_cfg_parallel(self):
+        """An explicit --kv-gather-degree keeps auto mode from taking GPUs for CFG parallel."""
+        for options, sp_degree in (
+            ({"num_gpus": 4, "kv_gather_degree": 4}, 4),
+            ({"num_gpus": 4, "tp_size": 2, "kv_gather_degree": 2}, 2),
+        ):
+            with (
+                self.subTest(options=options),
+                patch.object(ServerArgs, "_model_default_uses_cfg", return_value=True),
+            ):
+                args = _from_dict_without_model_resolution(
+                    {"model_path": "/fake", "performance_mode": "auto", **options}
+                )
+
+                self.assertEqual(args.cfg_parallel_degree, 1)
+                self.assertEqual(args.sp_degree, sp_degree)
+                self.assertEqual(args.kv_gather_degree, sp_degree)
+
+    def test_explicit_degree_blocks_auto_tuner_cfg_parallel(self):
+        """The auto-tuner's FSDP defaults do not turn on CFG parallel over an explicit --kv-gather-degree."""
+        with (
+            patch.object(ServerArgs, "_model_default_uses_cfg", return_value=True),
+            patch.object(
+                QwenImagePipelineConfig,
+                "get_model_deployment_config",
+                return_value=ModelDeploymentConfig(fsdp_auto_min_available_memory_gb=1),
+            ),
+        ):
+            args = _from_dict_without_model_resolution(
+                {
+                    "model_path": "/fake",
+                    "performance_mode": "speed",
+                    "num_gpus": 4,
+                    "kv_gather_degree": 4,
+                }
+            )
+
+        self.assertTrue(args.use_fsdp_inference)
+        self.assertEqual(args.cfg_parallel_degree, 1)
+        self.assertEqual(args.sp_degree, 4)
+
+
+class TestParallelismSizeChecks(unittest.TestCase):
+    def test_dp_size_below_one_is_rejected(self):
+        """--dp-size 0 raises the natural-number error, not a ZeroDivisionError."""
+        with self.assertRaisesRegex(ValueError, "--dp-size must be a natural number"):
+            _from_dict_without_model_resolution(
+                {"model_path": "/fake", "num_gpus": 2, "dp_size": 0}
+            )
+
+    def test_hsdp_shard_dim_defaults_to_remaining_gpus(self):
+        """The default FSDP mesh replicate x shard covers exactly num_gpus ranks."""
+        args = _from_dict_without_model_resolution(
+            {
+                "model_path": "/fake",
+                "num_gpus": 4,
+                "hsdp_replicate_dim": 2,
+                "performance_mode": "manual",
+            }
+        )
+
+        self.assertEqual(args.hsdp_shard_dim, 2)
+
 
 class TestFSDPShardConditions(unittest.TestCase):
     def test_helpers_match_only_direct_block_entries(self):

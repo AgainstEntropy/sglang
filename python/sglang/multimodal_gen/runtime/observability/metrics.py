@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 from typing import TYPE_CHECKING, Hashable
 
@@ -55,7 +56,7 @@ def start_role_metrics_server(server_args: ServerArgs) -> None:
 
 
 class DiffusionMetrics:
-    """Callbacks are serialized by the scheduler or RequestTracker lock.
+    """Request-state callbacks hold an internal lock; finish can run on the finalize thread.
 
     Keys identify original requests, not generated outputs or GPU batches.
     Request IDs, prompts and adapter paths are never exported as labels.
@@ -70,6 +71,7 @@ class DiffusionMetrics:
         labels = ("role", "replica")
         self._labels = (role, replica)
         self._requests: dict[Hashable, tuple[float, bool, bool]] = {}
+        self._lock = threading.Lock()
         self._queued = 0
         self._running = 0
         self._observed_modules: set[str] = set()
@@ -173,44 +175,47 @@ class DiffusionMetrics:
         self.running.labels(*self._labels).set(self._running)
 
     def enqueue(self, key: Hashable, *, is_warmup: bool, now: float | None = None):
-        self._requests[key] = (
-            time.monotonic() if now is None else now,
-            is_warmup,
-            False,
-        )
-        self._queued += 1
-        self._publish_depths()
+        with self._lock:
+            self._requests[key] = (
+                time.monotonic() if now is None else now,
+                is_warmup,
+                False,
+            )
+            self._queued += 1
+            self._publish_depths()
 
     def dispatch(self, key: Hashable):
-        state = self._requests.get(key)
-        if state is None or state[2]:
-            return
-        start, is_warmup, _ = state
-        self._requests[key] = (start, is_warmup, True)
-        self._queued -= 1
-        self._running += 1
-        self.queue_time.labels(*self._labels, str(is_warmup).lower()).observe(
-            max(0.0, time.monotonic() - start)
-        )
-        self._publish_depths()
+        with self._lock:
+            state = self._requests.get(key)
+            if state is None or state[2]:
+                return
+            start, is_warmup, _ = state
+            self._requests[key] = (start, is_warmup, True)
+            self._queued -= 1
+            self._running += 1
+            self.queue_time.labels(*self._labels, str(is_warmup).lower()).observe(
+                max(0.0, time.monotonic() - start)
+            )
+            self._publish_depths()
 
     def finish(self, key: Hashable, *, error: bool):
-        state = self._requests.pop(key, None)
-        if state is None:
-            return
-        start, is_warmup, dispatched = state
-        if dispatched:
-            self._running -= 1
-        else:
-            self._queued -= 1
-        labels = (
-            *self._labels,
-            "error" if error else "success",
-            str(is_warmup).lower(),
-        )
-        self.requests.labels(*labels).inc()
-        self.latency.labels(*labels).observe(max(0.0, time.monotonic() - start))
-        self._publish_depths()
+        with self._lock:
+            state = self._requests.pop(key, None)
+            if state is None:
+                return
+            start, is_warmup, dispatched = state
+            if dispatched:
+                self._running -= 1
+            else:
+                self._queued -= 1
+            labels = (
+                *self._labels,
+                "error" if error else "success",
+                str(is_warmup).lower(),
+            )
+            self.requests.labels(*labels).inc()
+            self.latency.labels(*labels).observe(max(0.0, time.monotonic() - start))
+            self._publish_depths()
 
     def observe_batch(self, size: int, stop_reason: str | None):
         reason = (stop_reason or "unspecified").partition(":")[0]

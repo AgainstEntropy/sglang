@@ -482,6 +482,8 @@ class PerformanceLogger:
         try:
             if get_is_main_process():
                 log_dir = get_diffusion_perf_log_dir()
+                if not log_dir:
+                    return
                 if not os.path.exists(log_dir):
                     os.makedirs(log_dir, exist_ok=True)
 

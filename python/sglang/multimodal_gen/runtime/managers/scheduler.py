@@ -1687,10 +1687,13 @@ class Scheduler(
                 ]
 
             # 3. return results
+            # the finalize thread finishes the metrics of a deferred request
+            deferred_req_ids: set[int] = set()
             try:
                 for item, output_batch in zip(items, output_batches, strict=True):
                     if isinstance(output_batch, _DeferredOutput):
                         self._submit_deferred_reply(item=item, deferred=output_batch)
+                        deferred_req_ids.add(id(item[1]))
                     else:
                         self._return_item_result(item, output_batch)
             except zmq.ZMQError as e:
@@ -1700,7 +1703,8 @@ class Scheduler(
             finally:
                 if self.metrics is not None:
                     for _, req in items:
-                        self.metrics.finish(id(req), error=True)
+                        if id(req) not in deferred_req_ids:
+                            self.metrics.finish(id(req), error=True)
 
         self._drain_deferred_replies()
         self._log_batch_metrics_summary()

@@ -9,6 +9,7 @@ import torch
 import sglang.multimodal_gen.runtime.managers.gpu_worker as gpu_worker_module
 import sglang.multimodal_gen.runtime.managers.memory_managers.component_manager as component_manager_module
 import sglang.multimodal_gen.runtime.utils.perf_logger as perf_logger_module
+from sglang.multimodal_gen.runtime.disaggregation.metrics import DisaggMetrics
 from sglang.multimodal_gen.runtime.disaggregation.orchestrator import (
     _deserialize_request_metrics,
 )
@@ -748,3 +749,33 @@ def test_log_request_summary_records_requested_tag(monkeypatch, tmp_path):
     )
 
     assert "custom_tag" in (tmp_path / "performance.log").read_text()
+
+
+def test_log_request_summary_skips_disabled_perf_log_dir(monkeypatch, tmp_path, capsys):
+    """An empty SGLANG_PERF_LOG_DIR disables perf logging without a per-request warning."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SGLANG_PERF_LOG_DIR", "")
+    monkeypatch.setattr(perf_logger_module, "get_git_commit_hash", lambda: "test")
+    monkeypatch.setattr(perf_logger_module, "get_is_main_process", lambda: True)
+
+    perf_logger_module.PerformanceLogger.log_request_summary(
+        perf_logger_module.RequestMetrics("r1")
+    )
+
+    assert "Failed to log performance record" not in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+
+
+def test_disagg_avg_latency_ignores_failed_requests():
+    """A failed request records no latency, so it must not lower avg_latency_s."""
+    metrics = DisaggMetrics("denoiser")
+    with patch(
+        "sglang.multimodal_gen.runtime.disaggregation.metrics.time.monotonic",
+        side_effect=[0.0, 10.0],
+    ):
+        metrics.record_request_start("ok")
+        metrics.record_request_complete("ok")
+    metrics.record_request_start("bad")
+    metrics.record_request_failed("bad")
+
+    assert metrics.snapshot().avg_latency_s == pytest.approx(10.0)

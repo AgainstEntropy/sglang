@@ -259,6 +259,7 @@ class DiffGenerator:
         requires recreating the generator.
         """
         self._raise_if_unavailable()
+        sampling_params_kwargs = sampling_params_kwargs or {}
         # 1. prepare requests
         prompts = self._resolve_prompts(
             sampling_params_kwargs.get("prompt"),

@@ -2,7 +2,9 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from sglang.multimodal_gen.configs.sample.sampling_params import SamplingParams
 from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import DiffGenerator
 
 
@@ -94,6 +96,20 @@ class TestResolvePrompts(unittest.TestCase):
                 gen._resolve_prompts(None, prompt_path=path)
         finally:
             os.unlink(path)
+
+
+class TestGenerateDefaultArgs(unittest.TestCase):
+    def test_generate_accepts_no_sampling_kwargs(self):
+        """generate() with no arguments resolves its prompt and builds sampling params."""
+        gen = _make_generator()
+        gen.server_args.model_path = "/fake"
+        built = RuntimeError("sampling params built")
+        with patch.object(
+            SamplingParams, "from_user_sampling_params_args", side_effect=built
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                gen.generate()
+        self.assertIs(ctx.exception, built)
 
 
 if __name__ == "__main__":
