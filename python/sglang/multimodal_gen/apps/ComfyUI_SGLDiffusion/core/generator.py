@@ -420,20 +420,13 @@ class SGLDiffusionGenerator:
 
     @staticmethod
     def _server_args_kwargs(kwargs: dict) -> dict:
-        """Drop plugin-only / stale flags that ServerArgs no longer accepts."""
+        """Drop plugin-only keys that ServerArgs does not accept."""
         import dataclasses
 
         from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
         valid = {f.name for f in dataclasses.fields(ServerArgs)}
-        aliases = {"dp_degree": "dp_size", "cache_strategy": None, "model_type": None}
-        cleaned = {}
-        for key, value in kwargs.items():
-            dest = aliases.get(key, key)
-            if dest is None or dest not in valid:
-                continue
-            cleaned[dest] = value
-        return cleaned
+        return {k: v for k, v in kwargs.items() if k in valid}
 
     def _worker_processes(self):
         gen = self.generator
