@@ -102,7 +102,7 @@ def _mirror_symlinked_nltk_data() -> None:
             )
 
 
-def _init_guardrails(offload_to_cpu: bool = False) -> None:
+def _init_guardrails() -> None:
     global _checker
     if _checker is not None:
         return
@@ -113,18 +113,15 @@ def _init_guardrails(offload_to_cpu: bool = False) -> None:
             "cosmos_guardrail is required for Cosmos3 safety checks. "
             "Install it with: pip install cosmos-guardrail==0.3.1"
         )
-    logger.info(
-        "Initializing Cosmos3 guardrails (offload_to_cpu=%s) ...", offload_to_cpu
-    )
+    logger.info("Initializing Cosmos3 guardrails ...")
     _checker = CosmosSafetyChecker()
     _mirror_symlinked_nltk_data()
-    idle_device = "cpu" if offload_to_cpu else current_platform.device_type
     for runner in (_checker.text_guardrail, _checker.video_guardrail):
         if runner is None or not hasattr(runner, "models"):
             continue
         for m in runner.models:
             if isinstance(m, torch.nn.Module):
-                m.to(idle_device)
+                m.to(current_platform.device_type)
     logger.info("Cosmos3 guardrails initialized.")
 
 
@@ -164,9 +161,9 @@ class Cosmos3TextGuardrailStage(PipelineStage):
 
     parallelism_type = StageParallelismType.MAIN_RANK_ONLY
 
-    def __init__(self, offload_to_cpu: bool = False):
+    def __init__(self):
         super().__init__()
-        _init_guardrails(offload_to_cpu)
+        _init_guardrails()
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
         if batch.use_guardrails is False:
