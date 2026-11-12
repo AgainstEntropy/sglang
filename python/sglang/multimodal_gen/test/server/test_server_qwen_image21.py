@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in full-checkpoint tests until nightly runners can access the weights.
+"""Qwen-Image 2.1 full-checkpoint tests, run nightly on H100.
 
-Set SGLANG_QWEN_IMAGE21_TEST_MODEL to an authorized model directory and
-SGLANG_QWEN_IMAGE21_TEST_IMAGE to a reference PNG to include editing.
+SGLANG_QWEN_IMAGE21_TEST_MODEL overrides the checkpoint and
+SGLANG_QWEN_IMAGE21_TEST_IMAGE the editing reference (a local file or URL).
 """
 
 import io
@@ -18,14 +18,18 @@ from sglang.multimodal_gen.test.server.test_server_common import (  # noqa: F401
     diffusion_server,
 )
 from sglang.multimodal_gen.test.server.testcase_configs import (
+    TI2I_QWEN_IMAGE_EDIT_INPUT,
     DiffusionSamplingParams,
     DiffusionServerArgs,
     DiffusionTestCase,
 )
+from sglang.multimodal_gen.test.test_utils import (
+    DEFAULT_QWEN_IMAGE_21_MODEL_NAME_FOR_TEST,
+    is_image_url,
+)
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SGLANG_QWEN_IMAGE21_TEST_MODEL"),
-    reason="requires an authorized Qwen-Image 2.1 checkpoint",
+MODEL = os.environ.get(
+    "SGLANG_QWEN_IMAGE21_TEST_MODEL", DEFAULT_QWEN_IMAGE_21_MODEL_NAME_FOR_TEST
 )
 
 
@@ -35,11 +39,12 @@ def case(request):
     image = None
     prompt = "A red ceramic teapot on a wooden table beside a window."
     if mode == "edit":
-        image_path = os.environ.get("SGLANG_QWEN_IMAGE21_TEST_IMAGE")
-        if not image_path:
-            pytest.skip("set SGLANG_QWEN_IMAGE21_TEST_IMAGE for the editing test")
-        image = Path(image_path)
-        assert image.is_file(), f"Reference image does not exist: {image}"
+        image = os.environ.get(
+            "SGLANG_QWEN_IMAGE21_TEST_IMAGE", TI2I_QWEN_IMAGE_EDIT_INPUT
+        )
+        if not is_image_url(image):
+            image = Path(image)
+            assert image.is_file(), f"Reference image does not exist: {image}"
         prompt = "Change the teapot to blue, keeping its shape and the scene unchanged."
     elif mode == "alpha":
         prompt = (
@@ -50,7 +55,7 @@ def case(request):
     return DiffusionTestCase(
         f"qwen_image21_{mode}",
         DiffusionServerArgs(
-            model_path=os.environ["SGLANG_QWEN_IMAGE21_TEST_MODEL"],
+            model_path=MODEL,
             modality="image",
             extras=[
                 "--model-id Qwen-Image-2.1",
@@ -67,6 +72,8 @@ def case(request):
         ),
         perf_repeat_requests=2,
         run_perf_check=False,
+        # No h100 scenario yet; drop this once one is recorded.
+        require_perf_baseline=False,
         run_consistency_check=False,
         run_component_accuracy_check=False,
         expected_model_id="Qwen-Image-2.1",

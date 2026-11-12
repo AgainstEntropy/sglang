@@ -1,4 +1,4 @@
-"""PR-blocking diffusion smoke tests that require four H100 GPUs."""
+"""Nightly diffusion smoke tests that require four H100 GPUs."""
 
 from __future__ import annotations
 

@@ -16,7 +16,7 @@ on:
         # A free-text field rather than a choice: `on:` blocks take no
         # expressions, so an options list would be a second copy of the matrix
         # below to keep in sync. Matched in _pr-test-stage.yml.
-        description: 'runner_config to run alone, or "diffusion" (empty or "all" runs every one)'
+        description: 'runner_config to run alone, or "diffusion" for the benchmark and every diffusion-* row (empty or "all" runs every one)'
         required: false
         type: string
         default: 'all'
@@ -94,6 +94,10 @@ jobs:
           - { runner_config: 8-gpu-h200, run_timeout: '300', job_timeout: '360' }
           - { runner_config: 8-gpu-b200, run_timeout: '360', job_timeout: '420' }
           - { runner_config: 8-gpu-b300, run_timeout: '360', job_timeout: '420' }
+          # Diffusion e2e suites, run through their test/registered bridges.
+          - { runner_config: diffusion-1-gpu-h100, run_timeout: '90', job_timeout: '150' }
+          - { runner_config: diffusion-1-gpu-b200, run_timeout: '60', job_timeout: '120' }
+          - { runner_config: diffusion-4-gpu-h100, run_timeout: '60', job_timeout: '120' }
     uses: ./.github/workflows/_pr-test-stage.yml
     with:
       self_name: nightly-test-${{ matrix.runner_config }}

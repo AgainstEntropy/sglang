@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in HTTP regression tests for both public Ming checkpoints.
-
-Set SGLANG_TEST_MING_IMAGE=1 on a GPU host with sufficient device/host memory.
-"""
+"""HTTP regression tests for both public Ming checkpoints, run nightly on H100."""
 
 import base64
 import io
-import os
 
 import numpy as np
 import pytest
@@ -20,11 +16,6 @@ from sglang.multimodal_gen.test.server.testcase_configs import (
     DiffusionSamplingParams,
     DiffusionServerArgs,
     DiffusionTestCase,
-)
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get("SGLANG_TEST_MING_IMAGE") != "1",
-    reason="opt-in full-checkpoint Ming-Image test",
 )
 
 

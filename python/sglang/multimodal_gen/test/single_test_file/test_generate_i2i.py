@@ -1,6 +1,9 @@
 import os
+import tempfile
+import time
 import unittest
 
+import requests
 from PIL import Image
 
 from sglang.multimodal_gen.configs.task_type import DataType
@@ -14,16 +17,47 @@ from sglang.multimodal_gen.test.test_utils import (
 )
 
 
+def _fetch_with_retries(url: str, directory: str, attempts: int = 4) -> str:
+    path = os.path.join(directory, os.path.basename(url))
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            with open(path, "wb") as f:
+                f.write(response.content)
+            with Image.open(path) as image:
+                image.verify()
+            return path
+        except (requests.RequestException, OSError):
+            if attempt == attempts:
+                raise
+            time.sleep(5 * attempt)
+
+
 class TestQwenImageEditI2I(CLIBase):
     model_path: str = DEFAULT_QWEN_IMAGE_EDIT_2511_MODEL_NAME_FOR_TEST
     data_type: DataType = DataType.IMAGE
     width: int = 512
     height: int = 512
 
-    test_image_urls = [
+    remote_image_urls = (
         "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/edit2509/edit2509_1.jpg",
         "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/edit2509/edit2509_2.jpg",
-    ]
+    )
+
+    # CLIBase.test_single_gpu is a T2I run with no --image-path; an edit model
+    # needs an input image, so the inherited case cannot pass here.
+    test_single_gpu = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Fetched once so a slow or flaky remote host fails here, not mid-generate.
+        input_dir = tempfile.TemporaryDirectory(prefix="sglang_i2i_inputs_")
+        cls.addClassCleanup(input_dir.cleanup)
+        cls.input_image_paths = [
+            _fetch_with_retries(url, input_dir.name) for url in cls.remote_image_urls
+        ]
 
     def get_base_command(self):
         return [
@@ -70,7 +104,7 @@ class TestQwenImageEditI2I(CLIBase):
             "--prompt",
             "Add a red hat",
             "--image-path",
-            self.test_image_urls[0],
+            self.input_image_paths[0],
         ]
 
         succeed = run_command(command)
@@ -86,7 +120,7 @@ class TestQwenImageEditI2I(CLIBase):
             "--prompt",
             "Combine both images",
             "--image-path",
-            *self.test_image_urls,
+            *self.input_image_paths,
         ]
 
         succeed = run_command(command)
@@ -103,7 +137,7 @@ class TestQwenImageEditI2I(CLIBase):
             "Convert to oil painting style",
             "Convert to watercolor style",
             "--image-path",
-            *self.test_image_urls,
+            *self.input_image_paths,
         ]
 
         succeed = run_command(command)
@@ -120,7 +154,7 @@ class TestQwenImageEditI2I(CLIBase):
             "Add a red hat",
             "Change to blue background",
             "--image-path",
-            self.test_image_urls[0],
+            self.input_image_paths[0],
         ]
 
         succeed = run_command(command)

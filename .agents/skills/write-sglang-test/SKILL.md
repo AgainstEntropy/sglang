@@ -97,6 +97,8 @@ that runs nightly on it, with `auto_partition` splitting the work. There is no
 per-purpose split; kernel, eval, perf, and precision all share their machine's suite.
 
 > **Note**: A CUDA diffusion test registers on a `diffusion-*` runner_config (for example `stage="base-b", runner_config="diffusion-unit-1-gpu-h100"`), whose install adds the diffusion extra; those suites run in `pr-test-multimodal-gen.yml`. AMD diffusion uses `python/sglang/multimodal_gen/test/run_suite.py`.
+>
+> Diffusion nightly runs as rows of `nightly-test-nvidia.yml` (`nightly-test-diffusion-1-gpu-h100`, `-1-gpu-b200`, `-4-gpu-h100`). Each row's bridge, `test/registered/e2e/diffusion/test_diffusion_nightly_*.py`, runs one `nightly-*` entry of `FILE_SUITES` in `python/sglang/multimodal_gen/test/server/gpu_cases.py`. To add a diffusion e2e file to nightly, list it in that entry and raise the bridge's `est_time`; do not add an opt-in env gate. A case with no perf scenario for the lane's GPU sets `require_perf_baseline=False` until one is recorded. These rows pass no HF token, so gated checkpoints stay in the PR lanes.
 
 ### Choosing a Tier
 

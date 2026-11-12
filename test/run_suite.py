@@ -165,6 +165,10 @@ NIGHTLY_SUITES = {
         "nightly-test-8-gpu-h200",
         "nightly-test-8-gpu-b200",
         "nightly-test-8-gpu-b300",
+        # Diffusion bridges, as in PER_COMMIT_SUITES.
+        "nightly-test-diffusion-1-gpu-h100",
+        "nightly-test-diffusion-1-gpu-b200",
+        "nightly-test-diffusion-4-gpu-h100",
     ],
     HWBackend.AMD: [
         "nightly-amd",

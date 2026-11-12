@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in HTTP validation: SGLANG_ANIMA_TEST_MODEL=<HF id or local checkpoint>."""
+"""Anima HTTP validation; SGLANG_ANIMA_TEST_MODEL overrides the checkpoint."""
 
 import base64
 import io
@@ -14,16 +14,15 @@ from PIL import Image
 from sglang.multimodal_gen.test.server.test_server_utils import ServerManager
 from sglang.multimodal_gen.test.test_utils import get_dynamic_server_port
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SGLANG_ANIMA_TEST_MODEL"),
-    reason="set SGLANG_ANIMA_TEST_MODEL for full-checkpoint HTTP tests",
+MODEL = os.environ.get(
+    "SGLANG_ANIMA_TEST_MODEL", "circlestone-labs/Anima-Base-v1.0-Diffusers"
 )
 
 
 @pytest.fixture(scope="module")
 def server():
     manager = ServerManager(
-        model=os.environ["SGLANG_ANIMA_TEST_MODEL"],
+        model=MODEL,
         port=get_dynamic_server_port(),
         extra_args="--num-gpus 1 --performance-mode speed --attention-backend fa",
     )

@@ -817,6 +817,8 @@ MINIMAX_H3_IMAGE_B200_CASES = [
 
 ONE_GPU_B200_CASES = ONE_GPU_MODELOPT_NVFP4_CASES + MINIMAX_H3_IMAGE_B200_CASES
 
+# Nightly on 4x H100. No h100 scenario exists yet, so require_perf_baseline is
+# off; drop it once one is recorded.
 MINIMAX_H3_FOUR_GPU_H100_CASES = [
     DiffusionTestCase(
         "minimax_h3_fl2va_first_frame_4gpu_h100",
@@ -876,6 +878,7 @@ MINIMAX_H3_FOUR_GPU_H100_CASES = [
             },
         ),
         run_perf_check=False,
+        require_perf_baseline=False,
         run_consistency_check=False,
         run_component_accuracy_check=False,
         run_models_api_check=False,
@@ -917,6 +920,7 @@ MINIMAX_H3_FOUR_GPU_H100_CASES = [
             },
         ),
         run_perf_check=False,
+        require_perf_baseline=False,
         run_consistency_check=False,
         run_component_accuracy_check=False,
         run_models_api_check=False,
@@ -958,6 +962,7 @@ MINIMAX_H3_FOUR_GPU_H100_CASES = [
             },
         ),
         run_perf_check=False,
+        require_perf_baseline=False,
         run_consistency_check=False,
         run_component_accuracy_check=False,
         run_models_api_check=False,
@@ -1628,7 +1633,16 @@ FILE_SUITES = {
     "1-gpu-b200": [
         "test_server_b200.py",
     ],
-    "4-gpu-h100": [
+    # Nightly lanes, run by test/registered/e2e/diffusion/test_diffusion_nightly_*.py.
+    "nightly-1-gpu-h100": [
+        "test_server_ming_image.py",
+        "test_server_qwen_image21.py",
+    ],
+    # Kandinsky 6 Pro-distill peaks at ~80 GB, past an H100's memory.
+    "nightly-1-gpu-b200": [
+        "test_server_kandinsky6.py",
+    ],
+    "nightly-4-gpu-h100": [
         "test_server_4_gpu_h100.py",
     ],
 }
@@ -1657,6 +1671,10 @@ STANDALONE_FILES = {
         "../single_test_file/test_generate_zimage_turbo_cli.py",
         "../single_test_file/test_nomas_offline.py",
         "../single_test_file/test_update_weights_from_disk.py",
+        "test_server_anima.py",
+        "test_request_logger.py",
+        "test_server_kandinsky6_sr.py",
+        "../single_test_file/test_generate_i2i.py",
     ],
     "2-gpu": [
         "../single_test_file/test_disagg_server.py",
@@ -1699,6 +1717,21 @@ if current_platform.is_hip():
         f for f in STANDALONE_FILES["2-gpu"] if not f.startswith("../unit/")
     ]
 
+# Validated on CUDA only. The list above stays literal because the CI partition
+# planner reads STANDALONE_FILES by AST, without importing this module.
+_CUDA_ONLY_ONE_GPU_STANDALONE_FILES = (
+    "test_server_anima.py",
+    "test_request_logger.py",
+    "test_server_kandinsky6_sr.py",
+    "../single_test_file/test_generate_i2i.py",
+)
+if not current_platform.is_cuda():
+    STANDALONE_FILES["1-gpu"] = [
+        f
+        for f in STANDALONE_FILES["1-gpu"]
+        if f not in _CUDA_ONLY_ONE_GPU_STANDALONE_FILES
+    ]
+
 # New standalone files may omit an estimate once to learn the real CI runtime.
 # CI will use a fallback estimate for sharding, run the test, then print a
 # measured value that must be copied into STANDALONE_FILE_EST_TIMES.
@@ -1713,6 +1746,12 @@ STANDALONE_FILE_EST_TIMES = {
         # This is a partitioning estimate, not a performance gate.
         "../single_test_file/test_nomas_offline.py": 100.0,
         "../single_test_file/test_update_weights_from_disk.py": 200.0,
+        # B200 full-process runs (75 s, 189 s, 300 s, 245 s), padded for H100
+        # and a cold cache; refresh from the measured H100 CI time.
+        "test_server_anima.py": 120.0,
+        "test_request_logger.py": 270.0,
+        "test_server_kandinsky6_sr.py": 420.0,
+        "../single_test_file/test_generate_i2i.py": 360.0,
     },
     "2-gpu": {
         "../single_test_file/test_disagg_server.py": 780.0,

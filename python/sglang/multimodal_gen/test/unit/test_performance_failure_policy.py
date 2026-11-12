@@ -86,6 +86,41 @@ def test_e2e_only_does_not_require_stage_metrics(monkeypatch, generate_baseline)
     assert bool(common._PENDING_BASELINE_DUMPS) == generate_baseline
 
 
+@pytest.mark.parametrize("require_perf_baseline", [True, False])
+def test_missing_scenario_fails_only_when_a_baseline_is_required(
+    monkeypatch, require_perf_baseline
+):
+    """A case without a platform scenario fails unless it opts out of the baseline."""
+    monkeypatch.setenv("SGLANG_GEN_BASELINE", "0")
+    case = DiffusionTestCase(
+        "no_scenario_for_this_platform",
+        DiffusionServerArgs(model_path="test", modality="image"),
+        DiffusionSamplingParams(prompt="test"),
+        run_perf_check=False,
+        require_perf_baseline=require_perf_baseline,
+    )
+    monkeypatch.delitem(common.BASELINE_CONFIG.scenarios, case.id, raising=False)
+    server = common.DiffusionServerBase()
+    server._perf_results = []
+    record = RequestPerfRecord(
+        request_id="missing",
+        commit_hash="test",
+        tag="missing",
+        stages=[],
+        steps=[],
+        total_duration_ms=1000,
+    )
+    validate = lambda: server._validate_and_record(
+        SimpleNamespace(load_time_ms=100), case, record
+    )
+    if require_perf_baseline:
+        with pytest.raises(pytest.fail.Exception, match="not found in"):
+            validate()
+    else:
+        validate()
+    assert len(server._perf_results) == 1
+
+
 @pytest.mark.parametrize(
     "output",
     [

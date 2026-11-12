@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in SR checkpoint test covering real JSON and multipart video requests."""
+"""SR checkpoint test covering real JSON and multipart video requests.
+
+SGLANG_KANDINSKY6_SR_TEST_MODEL overrides the checkpoint.
+"""
 
 import io
 import os
@@ -18,9 +21,9 @@ from sglang.multimodal_gen.test.test_utils import (
     get_dynamic_server_port,
 )
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SGLANG_KANDINSKY6_SR_TEST_MODEL"),
-    reason="set SGLANG_KANDINSKY6_SR_TEST_MODEL for full-checkpoint HTTP tests",
+MODEL = os.environ.get(
+    "SGLANG_KANDINSKY6_SR_TEST_MODEL",
+    "kandinskylab/Kandinsky-6.0-VSR-distilled2steps-5s-Diffusers",
 )
 
 
@@ -83,7 +86,7 @@ def source_videos(tmp_path_factory):
 def server(tmp_path_factory):
     directory = tmp_path_factory.mktemp("kandinsky6_sr_server")
     manager = ServerManager(
-        model=os.environ["SGLANG_KANDINSKY6_SR_TEST_MODEL"],
+        model=MODEL,
         port=get_dynamic_server_port(),
         extra_args=(
             "--performance-mode speed --attention-backend fa --warmup-mode off "

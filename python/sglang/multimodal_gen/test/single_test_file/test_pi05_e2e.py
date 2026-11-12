@@ -1,4 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Manual Pi0.5 perf, GT and multi-GPU harness; opt in with SGLANG_RUN_PI05_E2E=1.
+
+It is in no CI lane. The PR lane already covers this checkpoint through the
+pi05_action_http case in server/gpu_cases.py (load, HTTP action, CUDA graph,
+GT consistency) and the prefix cache through unit/test_pi05_prefix_cache.py.
+A nightly lane would need an HF token that can read the gated
+google/paligemma-3b-pt-224 config, and the nightly stage passes none.
+"""
 
 from __future__ import annotations
 

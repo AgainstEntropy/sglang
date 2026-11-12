@@ -463,6 +463,12 @@ class DiffusionServerBase:
 
         if missing_scenario:
             self._dump_baseline_for_testcase(case, summary, missing_scenario)
+            if not case.require_perf_baseline:
+                logger.warning(
+                    f"[performance] {case.id}: no scenario in "
+                    f"{get_perf_baseline_update_path()}; skipping validation"
+                )
+                return
             pytest.fail(
                 f"Testcase '{case.id}' not found in {get_perf_baseline_update_path()}"
             )

@@ -106,13 +106,15 @@ jobs:
     # `runner_filter` is matched here rather than in each caller's job `if`: a
     # caller that declares its runners as a matrix cannot, since job-level `if`
     # sees github/needs/vars/inputs but not `matrix`. Callers that never declare
-    # the input read back null and match every runner_config.
+    # the input read back null and match every runner_config. "diffusion"
+    # selects every diffusion-* runner_config.
     if: |
       always() &&
       (fromJson(inputs.caller_inputs).runner_filter == null ||
        fromJson(inputs.caller_inputs).runner_filter == '' ||
        fromJson(inputs.caller_inputs).runner_filter == 'all' ||
-       fromJson(inputs.caller_inputs).runner_filter == inputs.runner_config) &&
+       fromJson(inputs.caller_inputs).runner_filter == inputs.runner_config ||
+       (fromJson(inputs.caller_inputs).runner_filter == 'diffusion' && startsWith(inputs.runner_config, 'diffusion-'))) &&
       ((github.event_name == 'schedule' || fromJson(inputs.caller_inputs).test_parallel_dispatch == true) || (!failure() && !cancelled())) &&
       (fromJson(inputs.check_changes).main_package == 'true' || fromJson(inputs.check_changes).sgl_kernel == 'true')
     # runs-on resolved from runs_on_map; check-changes already substituted

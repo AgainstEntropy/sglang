@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in checkpoint test; SGLANG_KANDINSKY6_TEST_SERVER_ARGS selects topology."""
+"""Kandinsky 6 checkpoint test, run nightly on one B200.
+
+SGLANG_KANDINSKY6_TEST_MODEL overrides the checkpoint and
+SGLANG_KANDINSKY6_TEST_SERVER_ARGS selects the topology.
+"""
 
 import io
 import json
@@ -23,17 +27,19 @@ from sglang.multimodal_gen.test.test_utils import (
     get_dynamic_server_port,
 )
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SGLANG_KANDINSKY6_TEST_MODEL"),
-    reason="set SGLANG_KANDINSKY6_TEST_MODEL for full-checkpoint HTTP tests",
+MODEL = os.environ.get(
+    "SGLANG_KANDINSKY6_TEST_MODEL",
+    "kandinskylab/Kandinsky-6.0-Pro-distill-5s-Diffusers",
 )
 
 
 @pytest.fixture(scope="module")
 def server():
     manager = ServerManager(
-        model=os.environ["SGLANG_KANDINSKY6_TEST_MODEL"],
+        model=MODEL,
         port=get_dynamic_server_port(),
+        # A cold cache downloads ~80 GB before the server comes up.
+        wait_deadline=float(os.environ.get("SGLANG_TEST_WAIT_SECS", "2400")),
         extra_args=(
             "--performance-mode speed --attention-backend fa --warmup-mode off "
             + os.environ.get("SGLANG_KANDINSKY6_TEST_SERVER_ARGS", "--num-gpus 1")
@@ -161,10 +167,9 @@ def test_request_cache_dit_refresh_and_opt_out(server):
 
 @pytest.fixture(scope="module")
 def lora_adapter(tmp_path_factory):
-    model = os.environ["SGLANG_KANDINSKY6_TEST_MODEL"]
-    config_path = Path(model) / "transformer" / "config.json"
+    config_path = Path(MODEL) / "transformer" / "config.json"
     if not config_path.is_file():
-        config_path = Path(hf_hub_download(model, "transformer/config.json"))
+        config_path = Path(hf_hub_download(MODEL, "transformer/config.json"))
     config = json.loads(config_path.read_text())
     layers = {
         "visual_transformer_blocks.0.video_dec_block.feed_forward.net.0.proj": (

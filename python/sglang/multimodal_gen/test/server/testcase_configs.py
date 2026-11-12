@@ -346,6 +346,9 @@ class DiffusionTestCase:
     server_args: DiffusionServerArgs
     sampling_params: DiffusionSamplingParams | None = None
     run_perf_check: bool = True
+    # False lets a case without a scenario in the platform's perf baseline pass,
+    # recording its metrics only; a case that has a scenario is still validated.
+    require_perf_baseline: bool = True
     # Validate every repetition against the same baseline and GT.
     perf_repeat_requests: int = 1
     perf_warmup_requests: int = 0
