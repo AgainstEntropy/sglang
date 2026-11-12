@@ -55,7 +55,7 @@ sglang generate --model-path inclusionAI/Ming-Image-0.1-Design \
 
 ```bash Layer decomposition
 sglang generate --model-path inclusionAI/Ming-Image-0.1-Design-Layer \
-  --image-path /path/to/input.png --num-layers 4 --save-output
+  --image-path /path/to/input.png --prompt "Number of layers: 4" --save-output
 ```
 
 Design defaults to 2048 by 2048; 1024 by 1024 reduces latency and activation

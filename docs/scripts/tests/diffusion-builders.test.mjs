@@ -567,3 +567,15 @@ test("structured prompts and realtime protocols remain model-specific", () => {
   assert.equal(body(sana).diffusers_kwargs.action, "w-80,wl-80,l-80,wj-80");
   assert.ok(resolve(sana, { checkpoint: "dense", mode: "realtime" }).builder.errors.length);
 });
+
+test("H3 rejects SageAttention with Ring parallelism like the server", () => {
+  const config = get("/MiniMax/MiniMax-H3.mdx");
+  const recipe = config.commandBuilder.resource.verifiedRecipes.find((entry) => entry.id === "h200-cross-node-16");
+  const ring = { ...recipe, topology_mode: "manual" };
+  assert.deepEqual(resolve(config, ring).builder.errors, []);
+  assert.deepEqual(resolve(config, { ...ring, attention: "fa" }).builder.errors, []);
+  const sage = resolve(config, { ...ring, attention: "sage" });
+  assert.match(sage.builder.errors.join(" "), /Ring parallelism requires the FlashAttention/);
+  assert.deepEqual(sage.builder.verification, { serve: "error", request: "error" });
+  assert.deepEqual(resolve(config, { attention: "sage" }).builder.errors, []);
+});

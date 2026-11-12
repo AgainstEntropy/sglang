@@ -719,6 +719,10 @@ return {
           }
         : resource.autoTopology(s);
       const errors = resource.validateTopology(s, topology);
+      // Mirrors the server check in configs/pipeline_configs/minimax_h3.py.
+      if (s.attention === "sage" && topology.ring_degree > 1) {
+        errors.push("H3 Ring parallelism requires the FlashAttention or AITER backend; SageAttention needs Ring 1.");
+      }
       const automaticRecipe = resource.verifiedRecipes.find((entry) => entry.hw === s.hw
         && entry.nodes === Number(s.nodes)
         && entry.gpus_per_node === Number(s.gpus_per_node)
