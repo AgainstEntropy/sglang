@@ -25,7 +25,7 @@ import { config } from '/src/snippets/configs/tencent/hunyuan-image3.jsx';
 
 [HunyuanImage-3.0-Instruct](https://huggingface.co/tencent/HunyuanImage-3.0-Instruct) combines a text-and-image transformer with diffusion image generation. It supports text-to-image requests and instruction-guided editing with reference images. The native pipeline reuses the transformer's text prefix during denoising and uses a SigLIP2 encoder plus a convolutional VAE for image conditioning.
 
-Choose it when one checkpoint must handle both generation and reference-based editing. Its 80B total parameters, despite approximately 13B active per token, make weight residency a major deployment constraint. This recipe covers the Instruct checkpoint, not the separate distilled release. Start with tensor parallelism and the default 50-step, guidance-2.5 sampling profile before testing acceleration options.
+Choose it when one checkpoint must handle both generation and reference-based editing. Its 80B total parameters, despite approximately 13B active per token, make weight residency a major deployment constraint. This recipe covers the Instruct checkpoint, not the separate distilled release. The base checkpoint, `tencent/HunyuanImage-3.0`, uses the same pipeline for text-to-image only; it rejects requests with reference images. Start with tensor parallelism and the default 50-step, guidance-2.5 sampling profile before testing acceleration options.
 
 ## 3. Reference-image editing
 

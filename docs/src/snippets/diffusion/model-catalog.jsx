@@ -19,6 +19,7 @@ export const DiffusionModelCatalog = ({ category }) => {
       name: "HunyuanImage-3.0",
       modelIds: ["tencent/HunyuanImage-3.0", "tencent/HunyuanImage-3.0-Instruct"],
       cookbook: "/cookbook/diffusion/Tencent/HunyuanImage3",
+      note: "The base checkpoint is text-to-image only; reference-image editing needs Instruct.",
     },
     {
       name: "Anima",
