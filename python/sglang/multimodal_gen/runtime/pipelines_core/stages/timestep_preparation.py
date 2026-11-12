@@ -17,6 +17,7 @@ import torch
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.pipelines_core.diffusion_scheduler_utils import (
     get_or_create_request_scheduler,
+    retrieve_timesteps,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages.base import (
@@ -122,43 +123,14 @@ class TimestepPreparationStage(PipelineStage):
             if key == "mu":
                 batch.extra["mu"] = value
 
-        # Handle custom timesteps or sigmas
-        if timesteps is not None and sigmas is not None:
-            raise ValueError(
-                "Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values"
-            )
-
-        if timesteps is not None:
-            accepts_timesteps = (
-                "timesteps" in inspect.signature(scheduler.set_timesteps).parameters
-            )
-            if not accepts_timesteps:
-                raise ValueError(
-                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                    f" timestep schedules. Please check whether you are using the correct scheduler."
-                )
-            scheduler.set_timesteps(
-                timesteps=timesteps, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
-        elif sigmas is not None:
-            accept_sigmas = (
-                "sigmas" in inspect.signature(scheduler.set_timesteps).parameters
-            )
-            if not accept_sigmas:
-                raise ValueError(
-                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                    f" sigmas schedules. Please check whether you are using the correct scheduler."
-                )
-            scheduler.set_timesteps(
-                sigmas=sigmas, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
-        else:
-            scheduler.set_timesteps(
-                num_inference_steps, device=device, **extra_set_timesteps_kwargs
-            )
-            timesteps = scheduler.timesteps
+        timesteps, _ = retrieve_timesteps(
+            scheduler,
+            num_inference_steps,
+            device,
+            timesteps=timesteps,
+            sigmas=sigmas,
+            **extra_set_timesteps_kwargs,
+        )
 
         # Update batch with prepared timesteps
         batch.timesteps = timesteps
