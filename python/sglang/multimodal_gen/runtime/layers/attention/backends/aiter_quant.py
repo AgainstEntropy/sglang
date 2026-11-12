@@ -270,17 +270,3 @@ class AITERQuantImpl(AttentionImpl):
             softmax_scale=self.softmax_scale,
             **self.scale_mode_kwargs,
         )
-
-    def forward_varlen(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        *,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-        cu_seqlens_host: tuple[int, ...] | None = None,
-    ) -> torch.Tensor:
-        raise NotImplementedError(
-            "AITER quant backend does not support varlen attention."
-        )

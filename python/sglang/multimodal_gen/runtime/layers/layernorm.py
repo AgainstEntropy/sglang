@@ -472,9 +472,7 @@ class LayerNorm(CustomOp):
         return F.layer_norm(x, (self.hidden_size,), self.weight, self.bias, self.eps)
 
     def extra_repr(self) -> str:
-        s = f"hidden_size={self.weight.data.size(0)}"
-        s += f", eps={self.variance_epsilon}"
-        return s
+        return f"hidden_size={self.hidden_size}, eps={self.eps}"
 
 
 # adapted from Diffusers: https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/normalization.py

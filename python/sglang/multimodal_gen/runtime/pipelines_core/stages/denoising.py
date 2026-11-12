@@ -2638,12 +2638,19 @@ class DenoisingStage(PipelineStage):
         Prepare Sliding Tile Attention (STA) parameters and settings.
         """
         # TODO(kevin): STA mask search, currently only support Wan2.1 with 69x768x1280
-        try:
-            STA_mode = STA_Mode[server_args.attention_backend_config.STA_mode]
-        except Exception as e:
-            logger.error(f"Passed STA_mode: {STA_mode} doesn't exist")
-            raise e
-        skip_time_steps = server_args.attention_backend_config.skip_time_steps
+        # attention_backend_config is an addict.Dict: a missing key reads as {}.
+        config = server_args.attention_backend_config or {}
+        mode_name = config.get("STA_mode", STA_Mode.STA_INFERENCE.name)
+        # NONE has no STA_param branch below, so it is not a usable mode.
+        valid_modes = [mode.name for mode in STA_Mode if mode is not STA_Mode.NONE]
+        if mode_name not in valid_modes:
+            raise ValueError(
+                f"Unknown STA_mode {mode_name!r}; expected one of {valid_modes}"
+            )
+        STA_mode = STA_Mode[mode_name]
+        skip_time_steps = config.get(
+            "skip_time_steps", server_args.pipeline_config.skip_time_steps
+        )
         if batch.timesteps is None:
             raise ValueError("Timesteps must be provided")
         timesteps_num = batch.timesteps.shape[0]

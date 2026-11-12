@@ -109,10 +109,9 @@ class SlidingTileAttentionImpl(AttentionImpl):
             raise ValueError("st attn not supported")
         # TODO(will-refactor): for now this is the mask strategy, but maybe we should
         # have a more general config for STA?
-        mask_strategy_file_path = (
-            get_global_server_args().attention_backend_config.mask_strategy_file_path
-        )
-        if mask_strategy_file_path is None:
+        config = get_global_server_args().attention_backend_config or {}
+        mask_strategy_file_path = config.get("mask_strategy_file_path")
+        if not mask_strategy_file_path:
             raise ValueError(
                 "sliding_tile_attn needs --attention-backend-config "
                 "mask_strategy_file_path=<path to the mask strategy JSON>"

@@ -227,5 +227,13 @@ class TestAiterQuantRejectedCalls(_AiterQuantTestCase):
             impl.forward_varlen(q, k, v, cu_seqlens=None, max_seqlen=SEQUENCE)
 
 
+class TestAiterQuantCapabilities(CustomTestCase):
+    """Runs without aiter: the capability flag is read off the class."""
+
+    def test_does_not_advertise_packed_varlen(self):
+        # The selector and the Qwen-VL vision tower route packed-varlen callers on this.
+        self.assertFalse(aiter_quant.AITERQuantBackend.supports_packed_varlen())
+
+
 if __name__ == "__main__":
     unittest.main()

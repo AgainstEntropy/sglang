@@ -279,14 +279,14 @@ The key-value form splits on commas, so list values (for example Sol-Attn `dense
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`STA_mode`</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>`str`</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>**Required.** Mode of STA: `STA_INFERENCE`, `STA_SEARCHING`, `STA_TUNING`, or `STA_TUNING_CFG`.</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>-</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Mode of STA: `STA_INFERENCE`, `STA_SEARCHING`, `STA_TUNING`, or `STA_TUNING_CFG`.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>`STA_INFERENCE`</td>
     </tr>
     <tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`skip_time_steps`</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>`int`</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Number of steps to use full attention before switching to sparse attention. Required for the `STA_TUNING` and `STA_TUNING_CFG` modes; ignored otherwise.</td>
-      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>-</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>Number of steps to use full attention before switching to sparse attention. Used only by the `STA_TUNING` and `STA_TUNING_CFG` modes.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>`15`</td>
     </tr>
   </tbody>
 </table>
