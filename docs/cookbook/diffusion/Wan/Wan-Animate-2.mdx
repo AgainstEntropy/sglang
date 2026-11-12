@@ -55,8 +55,8 @@ authors' command-line implementation runs for both checkpoints. The
 `FlowMatchEulerDiscreteScheduler` named in the distilled repo's
 `scheduler/scheduler_config.json` is read only by the Diffusers pipeline (which
 also omits the `log_scale` bias) and is not used here; on the same seed it lands
-1.8 dB farther from the authors' output. `--scheduler-class-override` is ignored
-for this checkpoint and logged. A local directory routes by the pipeline class in
+1.8 dB farther from the authors' output. `--scheduler-class-override` is rejected
+at startup for this checkpoint. A local directory routes by the pipeline class in
 its `modular_model_index.json` (`WanAnimate2DistilledModularPipeline` /
 `WanAnimate2ModularPipeline`) or by a `distill` token in the directory name (in a
 path that also contains `wan2.2-animate-2` or `wan_animate_2`); the detectors are

@@ -34,9 +34,6 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.model_specific_stages.w
     WanAnimate2VaeAdapter,
 )
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
-from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
-
-logger = init_logger(__name__)
 
 
 class WanAnimate2TransformerLoader(TransformerLoader):
@@ -60,14 +57,7 @@ class WanAnimate2SchedulerLoader(SchedulerLoader):
     ):
         pipeline_config = server_args.pipeline_config
         if isinstance(pipeline_config, Wan_Animate_2_14B_Distilled_Config):
-            override = pipeline_config.scheduler_class_override
-            if override:
-                logger.warning(
-                    "--scheduler-class-override %s is ignored for the distilled "
-                    "Wan-Animate-2 checkpoint, which samples with DPM-Solver++ 2M on "
-                    "the official sigma grid; drop the flag.",
-                    override,
-                )
+            # validate_server_args rejects --scheduler-class-override for this config.
             return DPMSolverMultistepScheduler(
                 num_train_timesteps=1000,
                 prediction_type="flow_prediction",

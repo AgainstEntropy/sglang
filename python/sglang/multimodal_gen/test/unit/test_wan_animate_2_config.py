@@ -1535,22 +1535,23 @@ def test_distilled_config_gets_dpm_solver_built_from_the_flow_matching_settings(
         assert getattr(inner, key) == value, key
 
 
-def test_distilled_config_ignores_the_scheduler_class_override_with_one_warning(caplog):
-    # The flag would select the shipped Euler scheduler on the base path; the distilled
-    # path keeps DPM-Solver++ and says so instead of silently ignoring the flag.
+def test_distilled_config_rejects_the_scheduler_class_override_at_startup():
+    # The loader always builds DPM-Solver++ for the distilled checkpoint, so the flag
+    # must fail before any weights load instead of being dropped.
     config = Wan_Animate_2_14B_Distilled_Config()
     config.scheduler_class_override = "FlowMatchEulerDiscreteScheduler"
-    with caplog.at_level(logging.WARNING):
-        scheduler = _load_scheduler(config, None)
-    assert isinstance(scheduler, DPMSolverMultistepScheduler)
-    inner = scheduler._inner.config
-    assert inner.algorithm_type == "dpmsolver++"
-    for key, value in _FLOW_MATCHING_SCHEDULER_KWARGS.items():
-        assert getattr(inner, key) == value, key
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1, warnings
-    assert "--scheduler-class-override FlowMatchEulerDiscreteScheduler" in warnings[0]
-    assert "ignored for the distilled Wan-Animate-2 checkpoint" in warnings[0]
+    with pytest.raises(
+        ValueError, match="--scheduler-class-override FlowMatchEulerDiscreteScheduler"
+    ):
+        config.validate_server_args(_parallel_server_args())
+    config.scheduler_class_override = None
+    config.validate_server_args(_parallel_server_args())
+
+
+def test_base_config_accepts_the_scheduler_class_override():
+    config = Wan_Animate_2_14B_Config()
+    config.scheduler_class_override = "FlowMatchEulerDiscreteScheduler"
+    config.validate_server_args(_parallel_server_args())
 
 
 def test_loader_keeps_the_checkpoint_scheduler_settings():

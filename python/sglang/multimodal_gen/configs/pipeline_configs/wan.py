@@ -479,6 +479,16 @@ class Wan_Animate_2_14B_Distilled_Config(Wan_Animate_2_14B_Config):
             super().get_model_deployment_config(), supports_cfg_parallel=False
         )
 
+    def validate_server_args(self, server_args: Any) -> None:
+        # WanAnimate2SchedulerLoader always builds DPM-Solver++ 2M for this checkpoint.
+        if self.scheduler_class_override:
+            raise ValueError(
+                f"--scheduler-class-override {self.scheduler_class_override} is not "
+                "supported for the distilled Wan-Animate-2 checkpoint, which samples "
+                "with DPM-Solver++ 2M on the official sigma grid; drop the flag."
+            )
+        super().validate_server_args(server_args)
+
 
 # =============================================
 # ============= Causal Self-Forcing =============

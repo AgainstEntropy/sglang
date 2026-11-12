@@ -1248,30 +1248,37 @@ class ServerArgs(DisaggServerArgsMixin):
             self.pipeline_config, LTX2PipelineConfig
         ):
             text_backend = self.component_attention_backends.get("text_encoder")
-            if text_backend != "torch_sdpa":
-                if text_backend is None:
-                    logger.info(
-                        "Automatically set torch_sdpa backend for component text_encoder to preserve LTX2 official attention semantics"
-                    )
-                else:
-                    logger.warning(
-                        "Overriding %s backend with torch_sdpa for component text_encoder to preserve LTX2 official attention semantics",
-                        text_backend,
-                    )
+            if text_backend is None:
+                logger.info(
+                    "Automatically set torch_sdpa backend for component text_encoder to preserve LTX2 official attention semantics"
+                )
                 self.component_attention_backends["text_encoder"] = "torch_sdpa"
-            # A role-qualified override would otherwise outrank the backend we
-            # just forced, so drop it for the same reason.
+            elif text_backend != "torch_sdpa":
+                raise ValueError(
+                    "LTX-2 runs its text encoder on torch_sdpa to preserve the "
+                    "official attention semantics; got --component-attention-backends "
+                    f"text_encoder={text_backend}. Drop the entry or set it to "
+                    "torch_sdpa."
+                )
+            # A role-qualified override would outrank the component-wide
+            # torch_sdpa, so only torch_sdpa role entries are accepted.
             text_encoder_roles = self.component_attention_backend_roles.pop(
-                "text_encoder", None
+                "text_encoder", {}
             )
-            if text_encoder_roles:
-                logger.warning(
-                    "Ignoring per-role attention backend overrides (%s) for component "
-                    "text_encoder to preserve LTX2 official attention semantics",
-                    ", ".join(
-                        f"{role}={backend}"
-                        for role, backend in sorted(text_encoder_roles.items())
-                    ),
+            rejected_roles = {
+                role: backend
+                for role, backend in text_encoder_roles.items()
+                if backend != "torch_sdpa"
+            }
+            if rejected_roles:
+                raise ValueError(
+                    "LTX-2 runs its text encoder on torch_sdpa to preserve the "
+                    "official attention semantics; got --component-attention-backends "
+                    + ",".join(
+                        f"text_encoder.{role}={backend}"
+                        for role, backend in sorted(rejected_roles.items())
+                    )
+                    + ". Drop the entries or set them to torch_sdpa."
                 )
         from sglang.multimodal_gen.configs.pipeline_configs.minimax_h3 import (
             MiniMaxH3PipelineConfig,
@@ -2041,6 +2048,43 @@ class ServerArgs(DisaggServerArgsMixin):
     def is_dit_layerwise_offload_selected(self) -> bool:
         """Return whether the primary DiT resolves to layerwise offload."""
         return self.residency_mode("transformer") == LAYERWISE_OFFLOAD
+
+    def _check_dit_layerwise_flag_applies(self, arg_name: str) -> None:
+        flag = "--" + arg_name.replace("_", "-")
+        message = (
+            f"{flag} has no effect because the DiT is not layerwise-offloaded. It "
+            "only applies together with --dit-layerwise-offload (or 'dit' in "
+            "--layerwise-offload-components)."
+        )
+        dit_mode = self.explicit_residency_mode("transformer")
+        # Without a DiT selector, auto/memory/speed may still pick layerwise DiT
+        # on a smaller GPU, so the same command must stay valid on a larger one.
+        placement_excludes_layerwise = (
+            dit_mode != LAYERWISE_OFFLOAD
+            if dit_mode is not None
+            else self.performance_mode == "manual"
+        )
+        # The flag also applies to a DiT under another key (MOVA's video_dit,
+        # Wan2.2's transformer_2) that is selected by name.
+        named_components = set(self.component_residency or {})
+        if self.is_arg_explicitly_set("layerwise_offload_components"):
+            named_components.update(
+                normalize_layerwise_offload_components(
+                    self.layerwise_offload_components
+                )
+                or ()
+            )
+        if any(
+            is_dit_component_name(name)
+            and self.is_explicit_layerwise_offload_component(name)
+            for name in named_components
+        ):
+            placement_excludes_layerwise = False
+        if self.is_arg_explicitly_set(arg_name) and placement_excludes_layerwise:
+            raise ValueError(
+                f"{message} Drop {flag} or select layerwise offload for the DiT."
+            )
+        logger.warning(message)
 
     def _adjust_layerwise_offload_components(self):
         selected_component_names = normalize_layerwise_offload_components(
@@ -3994,11 +4038,7 @@ class ServerArgs(DisaggServerArgsMixin):
             self.dit_layerwise_resident_layers > 0
             and not self.is_dit_layerwise_offload_selected
         ):
-            logger.warning(
-                "--dit-layerwise-resident-layers has no effect because the DiT is not "
-                "layerwise-offloaded. It only applies together with "
-                "--dit-layerwise-offload (or 'dit' in --layerwise-offload-components)."
-            )
+            self._check_dit_layerwise_flag_applies("dit_layerwise_resident_layers")
 
         if self.dit_layerwise_residency_policy not in RESIDENCY_POLICIES:
             # argparse's choices= only covers the CLI; ServerArgs is also
@@ -4013,12 +4053,7 @@ class ServerArgs(DisaggServerArgsMixin):
 
         if self.dit_layerwise_residency_policy != RESIDENCY_POLICY_LEADING:
             if not self.is_dit_layerwise_offload_selected:
-                logger.warning(
-                    "--dit-layerwise-residency-policy has no effect because the DiT is "
-                    "not layerwise-offloaded. It only applies together with "
-                    "--dit-layerwise-offload (or 'dit' in "
-                    "--layerwise-offload-components)."
-                )
+                self._check_dit_layerwise_flag_applies("dit_layerwise_residency_policy")
             elif self.dit_layerwise_resident_layers <= 0:
                 # With nothing resident every layer streams, so there is no
                 # layout to choose and the policies are the same run.
@@ -4036,11 +4071,8 @@ class ServerArgs(DisaggServerArgsMixin):
             )
         if self.dit_layerwise_residency_lifetime == RESIDENCY_LIFETIME_PERMANENT:
             if not self.is_dit_layerwise_offload_selected:
-                logger.warning(
-                    "--dit-layerwise-residency-lifetime has no effect because the "
-                    "DiT is not layerwise-offloaded. It only applies together with "
-                    "--dit-layerwise-offload (or 'dit' in "
-                    "--layerwise-offload-components)."
+                self._check_dit_layerwise_flag_applies(
+                    "dit_layerwise_residency_lifetime"
                 )
             elif self.dit_layerwise_resident_layers <= 0:
                 logger.warning(

@@ -364,6 +364,41 @@ class TestServerArgsPathExpansion(_CudaPlatformTestCase):
         )
         self.assertFalse(args.has_requested_component_attention_backends())
 
+    def test_ltx2_rejects_a_non_sdpa_text_encoder_backend(self):
+        for backends, named in (
+            ("text_encoder=fa", "text_encoder=fa"),
+            ("text_encoder.cross=fa", "text_encoder.cross=fa"),
+            (
+                "text_encoder=torch_sdpa,text_encoder.self=sage_attn",
+                "text_encoder.self=sage_attn",
+            ),
+        ):
+            with self.subTest(backends=backends):
+                with self.assertRaisesRegex(ValueError, f"torch_sdpa.*{named}"):
+                    _from_dict_without_model_resolution(
+                        {
+                            "model_path": "/data/my-model",
+                            "component_attention_backends": backends,
+                        },
+                        pipeline_config=LTX2PipelineConfig(),
+                    )
+
+    def test_ltx2_accepts_torch_sdpa_text_encoder_entries(self):
+        args = _from_dict_without_model_resolution(
+            {
+                "model_path": "/data/my-model",
+                "component_attention_backends": (
+                    "text_encoder=torch_sdpa,text_encoder.cross=torch_sdpa"
+                ),
+            },
+            pipeline_config=LTX2PipelineConfig(),
+        )
+
+        self.assertEqual(
+            args.component_attention_backends, {"text_encoder": "torch_sdpa"}
+        )
+        self.assertNotIn("text_encoder", args.component_attention_backend_roles)
+
     def test_component_attention_backend_lookup(self):
         args = self._from_dict_without_model_resolution(
             {
@@ -4103,6 +4138,71 @@ class TestDirectGpuWeightLoading(_CudaPlatformTestCase):
                 fsdp_args._validate_direct_gpu_weight_loading()
             with self.assertRaisesRegex(ValueError, "tp-size 1"):
                 tp_args._validate_direct_gpu_weight_loading()
+
+
+class TestDitLayerwiseFlagsWithoutLayerwiseOffload(_CudaPlatformTestCase):
+    FLAGS = {
+        "dit_layerwise_resident_layers": 4,
+        "dit_layerwise_residency_policy": "strided",
+        "dit_layerwise_residency_lifetime": "permanent",
+    }
+
+    def _args(self, **kwargs):
+        return _from_dict_without_model_resolution(
+            {"model_path": "/data/my-model", **kwargs}
+        )
+
+    def test_explicit_flag_raises_when_dit_placement_excludes_layerwise(self):
+        placements = (
+            {"performance_mode": "manual"},
+            {"dit_layerwise_offload": False},
+            {"component_residency": "dit=resident"},
+            {"performance_mode": "speed", "dit_cpu_offload": True},
+        )
+        for arg_name, value in self.FLAGS.items():
+            flag = "--" + arg_name.replace("_", "-")
+            for placement in placements:
+                with self.subTest(flag=flag, placement=placement):
+                    with self.assertRaisesRegex(ValueError, f"{flag} has no effect"):
+                        self._args(**placement, **{arg_name: value})
+
+    def test_flag_warns_when_auto_policy_may_still_pick_layerwise(self):
+        for arg_name, value in self.FLAGS.items():
+            flag = "--" + arg_name.replace("_", "-")
+            for mode in ("auto", "memory", "speed"):
+                with self.subTest(flag=flag, performance_mode=mode):
+                    with self.assertLogs(server_args_module.logger, "WARNING") as logs:
+                        args = self._args(performance_mode=mode, **{arg_name: value})
+                    self.assertFalse(args.is_dit_layerwise_offload_selected)
+                    self.assertTrue(
+                        any(f"{flag} has no effect" in line for line in logs.output)
+                    )
+
+    def test_flag_is_accepted_with_dit_layerwise_offload(self):
+        for arg_name, value in self.FLAGS.items():
+            with self.subTest(arg_name=arg_name):
+                args = self._args(
+                    **{
+                        "performance_mode": "manual",
+                        "dit_layerwise_offload": True,
+                        "dit_layerwise_resident_layers": 4,
+                        arg_name: value,
+                    }
+                )
+                self.assertTrue(args.is_dit_layerwise_offload_selected)
+
+    def test_flag_is_accepted_with_a_dit_selected_under_another_key(self):
+        placements = (
+            {"layerwise_offload_components": "video_dit,audio_dit"},
+            {"component_residency": "video_dit=layerwise-offload"},
+            {"component_residency": "transformer_2=layerwise-offload"},
+        )
+        for arg_name, value in self.FLAGS.items():
+            for placement in placements:
+                with self.subTest(arg_name=arg_name, placement=placement):
+                    self._args(
+                        performance_mode="manual", **placement, **{arg_name: value}
+                    )
 
 
 class TestLayerwiseResidencyLifetime(unittest.TestCase):
