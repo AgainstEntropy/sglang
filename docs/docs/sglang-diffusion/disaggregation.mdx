@@ -2,7 +2,13 @@
 title: "Disaggregated Diffusion Pipeline"
 metatags:
     description: "Split SGLang Diffusion pipelines into independent encoder, denoiser, and decoder services for disaggregated serving."
+tag: "EXPERIMENTAL"
 ---
+
+<Warning>
+**Experimental in 1.x.** Disaggregated serving, its flags, and its roles may change in a minor release. See
+[API stability](/docs/sglang-diffusion/api/stability).
+</Warning>
 
 Split a monolithic text-to-video/image pipeline into independent **Encoder**, **Denoiser**, and **Decoder** roles, each running on its own GPU(s). A central **DiffusionServer** routes requests through the pipeline.
 

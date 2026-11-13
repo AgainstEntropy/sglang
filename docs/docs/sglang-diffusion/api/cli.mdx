@@ -128,6 +128,11 @@ This isolation does not make untrusted pickle safe or recover from GPU failures.
 
 ### Disaggregated serving
 
+<Warning>
+**Experimental in 1.x.** These flags may change in a minor release. See
+[API stability](/docs/sglang-diffusion/api/stability).
+</Warning>
+
 - `--disagg-role {monolithic|encoder|prompt_encoder|image_encoder|denoiser|decoder|server}`: select the stages run by this process. `monolithic` is the default; the split `prompt_encoder` and `image_encoder` roles currently support FLUX.3 Image.
 - `--disagg-server-addr {TCP_ENDPOINT}`: head scheduler endpoint used by workers for registration and result routing.
 - `--encoder-urls {ENDPOINTS}`: combined encoder pool on the head. For split encoding, replace it with both `--prompt-encoder-urls` and `--image-encoder-urls`; do not mix the two topologies.
@@ -584,6 +589,11 @@ is equally strict: it fails the load if it never reaches a layer of that role.
 See [Attention Backends](/docs/sglang-diffusion/attention_backends#per-role-overrides).
 
 ## Diffusers Backend
+
+<Warning>
+**Experimental in 1.x.** `--backend diffusers` may change in a minor release. See
+[API stability](/docs/sglang-diffusion/api/stability).
+</Warning>
 
 Use `--backend diffusers` to force vanilla diffusers pipelines when no native SGLang implementation exists or when a model requires a custom pipeline class.
 

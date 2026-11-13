@@ -260,6 +260,11 @@ curl -sS -L "http://localhost:30010/v1/images/<IMAGE_ID>/content" \
 
 ### Mesh generation (SGLang extension)
 
+<Warning>
+**Experimental in 1.x.** `/v1/meshes` may change in a minor release. See
+[API stability](/docs/sglang-diffusion/api/stability).
+</Warning>
+
 For a mesh-generation model, `POST /v1/meshes` accepts an input image and returns
 an asynchronous job. This endpoint is a SGLang extension, not an OpenAI API.
 

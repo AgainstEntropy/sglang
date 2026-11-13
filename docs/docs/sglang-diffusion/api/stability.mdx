@@ -1,0 +1,222 @@
+---
+title: API stability
+sidebarTitle: API stability
+description: Which SGLang Diffusion interfaces stay stable across the 1.x series, which are experimental, and how they can change.
+---
+
+<Note>
+**Proposal.** The SGLang Diffusion stability scope is an open decision for the
+1.0 release. This page is the proposed answer. Until the maintainers accept it,
+treat every tier below as proposed.
+</Note>
+
+## Tiers
+
+- **Stable**: keeps working across all 1.x releases. It is not removed,
+  renamed, or given a different meaning in a 1.x release, except through the
+  [deprecation rule](#deprecation).
+- **Experimental**: may change or be removed in any minor release (1.y). The
+  release notes list every change. There is no deprecation window. An
+  experimental interface can be promoted to stable in a minor release.
+
+Anything not listed as stable on this page is experimental. This includes every
+command-line flag and environment variable that is not named below.
+
+Stability does not cover:
+
+- **Output numerics.** Generated pixels, frames, and audio may change between
+  minor releases. Output is bit-identical only within one version, on the same
+  environment, with `--quality exact`.
+- **Performance**, log messages, and error message text.
+- **Model support.** Each model family follows its tier in the
+  [model catalog](/docs/sglang-diffusion/compatibility_matrix). A stable route
+  serving an experimental model family is experimental for that family.
+
+## Compatibility rules
+
+### Request and response fields
+
+- The fields declared on the request and response models in
+  `runtime/entrypoints/openai/protocol.py` are stable for the stable routes:
+  `ImageGenerationsRequest`, `VideoGenerationsRequest`, `ImageResponse`,
+  `VideoResponse`, and `VideoListResponse`. A declared field is not removed,
+  renamed, or retyped, and its meaning does not change.
+- Fields only grow. A 1.x release may add optional request fields and new
+  response fields. Clients must ignore response fields they do not know.
+- These declared fields are experimental, because they expose debugging,
+  server paths, or experimental features: `diffusers_kwargs`,
+  `enable_teacache`, `progressive_mode`, `progressive_levels`,
+  `progressive_delta`, `profile`, `profile_all_stages`,
+  `num_profiled_timesteps`, `perf_dump_path`, `output_path`,
+  `upscaling_model_path`, `frame_interpolation_model_path`, and the response
+  fields `file_path`, `file_paths`, `peak_memory_mb`, and `inference_time_s`.
+- [Model-specific fields](/docs/sglang-diffusion/api/openai_api#model-specific-request-fields),
+  which a model declares on its own `SamplingParams`, follow that model
+  family's tier.
+- Today, a field that the active model does not declare is dropped without an
+  error. The proposal for 1.0 is to reject it with `400` and name the field.
+- Rejecting an input that had no effect, or that selects an unsupported
+  combination, is a bug fix, not a breaking change.
+
+The same rules apply to the fields of the base `SamplingParams` class in the
+Python API, and to the keys of a `--config` file.
+
+### Deprecation
+
+SGLang does not yet publish a compatibility policy for the LLM side. Until it
+does, this rule is proposed for diffusion, and will be changed to match the LLM
+policy once that page exists:
+
+- A deprecated stable interface keeps working, and logs a warning when used,
+  for at least one minor release before it is removed. An interface deprecated
+  in 1.y is removed no earlier than 1.(y+1).
+- A deprecated HTTP route is also marked `deprecated` in the OpenAPI schema.
+- The release notes list each deprecation with its replacement, and each
+  removal.
+- Deprecations and removals happen only in minor releases.
+
+`GET /models` is already marked deprecated in the OpenAPI schema, in favor of
+`GET /v1/models`. It does not log a warning yet.
+
+### Patch releases (1.0.x)
+
+A patch release may contain:
+
+- Bug fixes and security fixes, including fixes to experimental interfaces.
+- Errors for inputs that are silently ignored today. Each one is listed in the
+  release notes.
+- Documentation and CI changes.
+- Support for a new model, marked experimental, when it does not change shared
+  code paths.
+
+A patch release does not:
+
+- Remove, rename, or deprecate any interface, stable or experimental.
+- Change the default value of a stable flag or request field.
+- Add a stable interface, or promote an experimental one.
+- Raise a minimum dependency version, unless a security fix requires it.
+
+## HTTP routes
+
+These are all 40 routes that `create_app` in `runtime/entrypoints/http_server.py`
+mounts, plus `/metrics`.
+
+### Generation (OpenAI-compatible)
+
+| Route | Tier | Reason |
+| --- | --- | --- |
+| `POST /v1/images/generations` | Stable | OpenAI Images API. Documented and tested in CI. |
+| `POST /v1/images/edits` | Stable | OpenAI Images API. `mask` is rejected with `400`. |
+| `GET /v1/images/{image_id}/content` | Stable | Download path for a generated image. |
+| `POST /v1/videos` | Stable | OpenAI Videos API subset. Documented and tested in CI. |
+| `GET /v1/videos` | Stable | Lists video jobs. |
+| `GET /v1/videos/{video_id}` | Stable | Job status, polled by clients. |
+| `DELETE /v1/videos/{video_id}` | Stable | Cancels the job and removes it. Returns `503` if cancellation cannot be delivered. |
+| `GET /v1/videos/{video_id}/content` | Stable | Download path for a generated video. |
+| `GET /v1/models` | Stable | OpenAI model discovery. |
+| `GET /v1/models/{model}` | Stable | OpenAI model discovery. |
+
+### Health and metrics
+
+| Route | Tier | Reason |
+| --- | --- | --- |
+| `GET /health` | Stable | Readiness probe. Documented in the [CLI reference](/docs/sglang-diffusion/api/cli#health-endpoints). |
+| `GET /liveness` | Stable | Liveness probe. |
+| `GET /health_generate` | Stable | Alias of `/health`, kept for existing integrations. |
+| `GET /metrics` | Stable | Mounted with `--enable-metrics`. The metric names and labels on [Production metrics](/docs/sglang-diffusion/production_metrics) are stable; new metrics may be added. |
+| `GET /models` | Stable, deprecated | Replaced by `GET /v1/models`. |
+| `GET /server_info` | Experimental | The route stays, but the response body is not a contract. Shaped for gateway discovery. |
+| `GET /model_info` | Experimental | Same as `/server_info`. |
+| `GET /v1/model_info` | Experimental | Same as `/server_info`. Not documented. |
+| `GET /stats` | Experimental | Returns disaggregation statistics. Not documented. |
+
+### LoRA
+
+| Route | Tier | Reason |
+| --- | --- | --- |
+| `POST /v1/set_lora` | Stable | [Documented](/docs/sglang-diffusion/api/openai_api#lora-management) and tested in CI. Same operation as `DiffGenerator.set_lora`. |
+| `POST /v1/merge_lora_weights` | Stable | Same as above. |
+| `POST /v1/unmerge_lora_weights` | Stable | Same as above. |
+| `GET /v1/list_loras` | Stable | Same as above. |
+
+### Extensions
+
+| Route | Tier | Reason |
+| --- | --- | --- |
+| `POST /v1/meshes`, `GET /v1/meshes`, `GET /v1/meshes/{mesh_id}`, `DELETE /v1/meshes/{mesh_id}`, `GET /v1/meshes/{mesh_id}/content` | Experimental | One model family (Hunyuan3D). Job records are kept in process memory only. |
+| `POST /v1/actions/generations`, `GET /v1/actions/metadata`, `WS /v1/actions/realtime` | Experimental | Action (VLA) models. Mounted only for pipelines that support it. |
+| `WS /openpi/policy` | Experimental | OpenPI policy protocol for VLA models. Mounted only for pipelines that support it. |
+| `WS /v1/realtime_video/generate` | Experimental | The realtime session protocol is still changing. See [Realtime models](/docs/sglang-diffusion/realtime_models). |
+| `POST /vertex_generate` (or `$AIP_PREDICT_ROUTE`) | Experimental | Vertex AI prediction adapter. Not documented or tested. |
+
+### Post-training
+
+| Route | Tier | Reason |
+| --- | --- | --- |
+| `POST /update_weights_from_disk` | Experimental | RL integration. Follows trainer needs, and has no authentication. |
+| `POST /update_weights_from_tensor` | Experimental | Same as above. |
+| `POST /update_weights_from_tensor_checker` | Experimental | Same as above. |
+| `POST /get_weights_checksum` | Experimental | Same as above. |
+| `POST /release_memory_occupation` | Experimental | Same as above. |
+| `POST /resume_memory_occupation` | Experimental | Same as above. |
+| `POST /rollout/generate` | Experimental | RL rollouts with a msgpack response. Same as above. |
+
+## Serving modes and integrations
+
+| Interface | Tier | Reason |
+| --- | --- | --- |
+| Monolithic serving (default `--disagg-role monolithic`), including `--dp-size` | Stable | The default deployment, tested in CI. |
+| [Disaggregated serving](/docs/sglang-diffusion/disaggregation): `--disagg-*` flags, worker URL flags, the `DiffusionServer` head, and the transfer between roles | Experimental | Role layout and flags are still changing. The head serves the same HTTP routes, with the tiers above. |
+| `--backend diffusers` | Experimental | Runs upstream diffusers pipelines, which do not honor every SGLang flag. |
+| Gradio web UI (`--webui`, `--webui-port`) and the `realtime_webui` demo | Experimental | Demos, not APIs. |
+| [ComfyUI plugin](/docs/sglang-diffusion/comfyui) | Experimental | Integrated mode depends on ComfyUI internals. The plugin has no version pin and no end-to-end ComfyUI test. Server-mode nodes can be promoted once their inputs are tested. |
+
+## Command line
+
+| Interface | Tier | Reason |
+| --- | --- | --- |
+| `sglang serve` and `sglang generate` | Stable | The two entry points. |
+| Model: `--model-path`, `--model-id`, `--served-model-name`, `--model-variant`, `--revision`, `--trust-remote-code` | Stable | Needed by every deployment. |
+| Server: `--host`, `--port`, `--warmup-mode`, `--http-graceful-shutdown-timeout`, `--scheduler-rpc-timeout`, `--log-level` | Stable | Basic server control. |
+| Parallelism: `--num-gpus`, `--tp-size`, `--sp-degree`, `--ulysses-degree`, `--ring-degree`, `--enable-cfg-parallel`, `--dp-size` | Stable | Documented and tested in CI. |
+| LoRA: `--lora-path`, `--lora-nickname`, `--lora-scale`, `--lora-weight-name`, `--lora-merge-mode`, `--lora-alpha` | Stable | Same contract as the LoRA routes. |
+| Sampling and output: `--prompt`, `--negative-prompt`, `--image-path`, `--seed`, `--num-inference-steps`, `--guidance-scale`, `--height`, `--width`, `--num-frames`, `--fps`, `--num-outputs-per-prompt`, `--output-path`, `--output-file-name`, `--save-output`, `--return-frames`, `--quality` | Stable | Base `SamplingParams` fields. |
+| Attention: `--attention-backend` and its value names | Stable | Which backends a platform supports is in the [compatibility matrix](/docs/sglang-diffusion/compatibility_matrix). |
+| Memory: `--performance-mode`, `--component-residency`, and the CPU offload flags (`--dit-cpu-offload`, `--text-encoder-cpu-offload`, `--image-encoder-cpu-offload`, `--vae-cpu-offload`, `--cpu-offload-components`, `--pin-cpu-memory`, `--dit-layerwise-offload`, `--layerwise-offload-components`) | Stable | Documented. Whether the older offload flags are deprecated in favor of `--component-residency` is still open. |
+| Quantization: `--quantization` and component weight paths | Stable | Methods marked experimental on the [Quantization](/docs/sglang-diffusion/quantization) page stay experimental. |
+| Component paths: `--<component>-path` | Stable | For component names in the model's `model_index.json`. An unknown component name is accepted without effect today; that is a bug. |
+| Observability: `--enable-metrics`, `--log-requests`, `--log-requests-level`, `--log-requests-format`, `--log-requests-target`, `--enable-trace`, `--otlp-traces-endpoint`, `--otlp-service-name` | Stable | Operations tooling depends on them. |
+| `--enable-torch-compile` | Stable | Documented on/off switch. |
+| Tuning: `--kv-gather-degree`, `--encoder-parallel`, `--enable-breakable-cuda-graph`, `--bcg-text-buckets`, `--direct-gpu-weight-loading`, `--offload-during-compile`, `--enable-attention-backend-autotune`, `--component-attention-backends`, `--attention-backend-config`, layerwise residency and prefetch flags, `--use-fsdp-inference`, `--sleep-on-idle` | Experimental | New or validated on few models. |
+| Caching and approximation: Cache-DiT, TeaCache, Spectrum, progressive resolution | Experimental | Approximate, with model-specific tuning. |
+| Dynamic batching: `--batching-*` | Experimental | New; one mode implemented. |
+| Multi-node: `--nnodes`, `--node-rank`, `--dist-init-addr` | Experimental | No multi-node CI lane. |
+| Model-specific flags, such as `--minimax-h3-*`, `--ltx2-two-stage-device-mode`, and flags a pipeline adds itself | Experimental | Follow the model family's tier. |
+| Pipeline overrides: `--pipeline-config-path`, `--pipeline-class-name`, dotted `--<component>-config.<field>` flags | Experimental | Expose internal `PipelineConfig` fields. |
+| External services: `--srt-encoder-*`, `--pe-server-url`, `--prompt-enhancer-config` | Experimental | Depend on a second server and on specific models. |
+
+## Config file
+
+| Interface | Tier | Reason |
+| --- | --- | --- |
+| `--config` file (JSON or YAML) | Stable | The format is stable. Each key has the tier of the flag of the same name. Unknown keys are dropped without an error today. |
+| `--pipeline-config-path` JSON | Experimental | Its keys are internal `PipelineConfig` fields. |
+
+## Environment variables
+
+| Interface | Tier | Reason |
+| --- | --- | --- |
+| Cloud storage: `SGLANG_CLOUD_STORAGE_TYPE` and the `SGLANG_S3_*` variables | Stable | The only way to configure output upload. Tested in unit tests. |
+| All other variables, including every `SGLANG_DIFFUSION_*` and `SGLANG_CACHE_DIT_*` variable | Experimental | Tuning and debugging switches. See [Environment variables](/docs/sglang-diffusion/environment_variables). |
+
+## Python API
+
+| Interface | Tier | Reason |
+| --- | --- | --- |
+| `from sglang.multimodal_gen import DiffGenerator, SamplingParams` | Stable | The offline entry point. |
+| `DiffGenerator.from_pretrained`, `from_server_args`, `generate`, `generate_action`, `set_lora`, `merge_lora_weights`, `unmerge_lora_weights`, `list_loras`, `shutdown` | Stable | The 9 public members. Keyword arguments to `from_pretrained` have the tier of the matching flag. |
+| `DiffusionRuntimeError` (`sglang.multimodal_gen.runtime.utils.device_errors`) | Stable | Raised on a device failure or a dead worker. After it, every call raises it again; create a new generator. |
+| Base `SamplingParams` fields | Stable | Same rules as [request fields](#request-and-response-fields). |
+| Model-specific `SamplingParams` subclasses | Experimental | Follow the model family's tier. |
+| `PipelineConfig` and its subclasses | Experimental | Internal configuration. Exported for advanced use only. |
+| Everything else under `sglang.multimodal_gen` | Experimental | Internal. |

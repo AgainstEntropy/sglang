@@ -2,7 +2,13 @@
 title: "Realtime and Causal Video Models"
 metatags:
     description: "Deploy session-based realtime and request-based causal video models with SGLang Diffusion."
+tag: "EXPERIMENTAL"
 ---
+
+<Warning>
+**Experimental in 1.x.** The realtime WebSocket API (`/v1/realtime_video/generate`) and its session protocol may change in a minor release. See
+[API stability](/docs/sglang-diffusion/api/stability).
+</Warning>
 
 Realtime and causal video pipelines generate video incrementally and reuse state
 across chunks. This differs from offline diffusion pipelines, which denoise one
