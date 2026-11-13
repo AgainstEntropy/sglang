@@ -2,26 +2,32 @@
 
 Cases name these paths at import; ``write_synthetic_inputs`` creates the files
 before the first request. The server runs on the same host, so it reads the
-control clips straight from disk.
+control clips straight from disk. The blur control is the exception: the model
+copies a blurred drawing back instead of generating, so it is the checkpoint's
+own sample clip, fetched from its repo.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 SYNTHETIC_INPUT_DIR = Path(tempfile.gettempdir()) / "sglang_diffusion_test_inputs"
 
 HOUSE_EDIT_INPUT = SYNTHETIC_INPUT_DIR / "house_1024x1024.png"
 HOUSE_I2V_INPUT = SYNTHETIC_INPUT_DIR / "house_832x480.png"
-# 33 frames at 24 fps: the house drifts right under a blur control hint.
-HOUSE_BLUR_CONTROL = SYNTHETIC_INPUT_DIR / "house_blur_832x480_33f.mp4"
-HOUSE_BLUR_CONTROL_FRAMES = 33
-HOUSE_BLUR_CONTROL_FPS = 24
+# The Sim-Transfer checkpoint's blur sample: a dancer in a timber yard, 832x480 at
+# 30 fps; the case reads its first 33 frames.
+SIM_TRANSFER_REPO = "nvidia/Cosmos3-Nano-Sim-Transfer"
+SIM_TRANSFER_BLUR_SAMPLE = "assets/sample_data/example2/example2_blur.mp4"
+SIM_TRANSFER_BLUR_CONTROL = SYNTHETIC_INPUT_DIR / "sim_transfer_example2_blur.mp4"
+SIM_TRANSFER_BLUR_FRAMES = 33
+SIM_TRANSFER_BLUR_FPS = 30
 # Lane lines for a 2-camera rig, 29 frames at 30 fps each.
 ROAD_CONTROL_FRAMES = 29
 ROAD_CONTROL_FPS = 30
@@ -73,17 +79,6 @@ def draw_house(width: int, height: int, shift: int = 0) -> np.ndarray:
         fill=(230, 230, 200),
     )
     return np.asarray(image)
-
-
-def draw_house_blur_clip(
-    width: int = 832, height: int = 480, num_frames: int = HOUSE_BLUR_CONTROL_FRAMES
-) -> np.ndarray:
-    """The house drifting right, Gaussian-blurred like a blur control hint."""
-    frames = []
-    for index in range(num_frames):
-        frame = Image.fromarray(draw_house(width, height, shift=4 * index))
-        frames.append(np.asarray(frame.filter(ImageFilter.GaussianBlur(radius=8))))
-    return np.stack(frames)
 
 
 def draw_road_clip(
@@ -158,8 +153,15 @@ def write_synthetic_inputs() -> None:
         _write_image(HOUSE_EDIT_INPUT, draw_house(1024, 1024))
     if not HOUSE_I2V_INPUT.exists():
         _write_image(HOUSE_I2V_INPUT, draw_house(832, 480))
-    if not HOUSE_BLUR_CONTROL.exists():
-        _write_clip(HOUSE_BLUR_CONTROL, draw_house_blur_clip(), HOUSE_BLUR_CONTROL_FPS)
+    if not SIM_TRANSFER_BLUR_CONTROL.exists():
+        from huggingface_hub import hf_hub_download
+
+        sample = hf_hub_download(
+            repo_id=SIM_TRANSFER_REPO, filename=SIM_TRANSFER_BLUR_SAMPLE
+        )
+        _write_atomically(
+            SIM_TRANSFER_BLUR_CONTROL, lambda name: shutil.copyfile(sample, name)
+        )
     for vanishing_x, path in zip((0.5, 0.8), ROAD_CONTROLS.values()):
         if not path.exists():
             _write_clip(path, draw_road_clip(vanishing_x), ROAD_CONTROL_FPS)

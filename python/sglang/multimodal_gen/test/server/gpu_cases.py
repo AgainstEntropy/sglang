@@ -3,14 +3,14 @@ from pathlib import Path
 
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.test.server.common.synthetic_inputs import (
-    HOUSE_BLUR_CONTROL,
-    HOUSE_BLUR_CONTROL_FPS,
-    HOUSE_BLUR_CONTROL_FRAMES,
     HOUSE_EDIT_INPUT,
     HOUSE_I2V_INPUT,
     ROAD_CONTROL_FPS,
     ROAD_CONTROL_FRAMES,
     ROAD_CONTROLS,
+    SIM_TRANSFER_BLUR_CONTROL,
+    SIM_TRANSFER_BLUR_FPS,
+    SIM_TRANSFER_BLUR_FRAMES,
 )
 from sglang.multimodal_gen.test.server.testcase_configs import (
     MODELOPT_FLUX2_FP8_TRANSFORMER,
@@ -1013,7 +1013,8 @@ _COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS = DiffusionSamplingParams(
 )
 
 # One case per catalog family that no other lane loads, run nightly on one B200
-# (test_server_nightly_b200.py). No b200 scenario or golden exists for them yet.
+# (test_server_nightly_b200.py). No golden exists for them yet. Cases whose
+# pipeline reports no per-step denoise timings guard only e2e and load latency.
 NIGHTLY_ONE_GPU_B200_CASES = [
     DiffusionTestCase(
         "moss_image_base_t2i",
@@ -1025,7 +1026,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             output_size="1024x1024",
             extras={"seed": 42},
         ),
-        require_perf_baseline=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1038,7 +1038,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             output_size="1024x1024",
             extras={"seed": 42},
         ),
-        require_perf_baseline=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1050,7 +1049,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             # The model card's Turbo recipe; the registry defaults are the base model's.
             extras={"num_inference_steps": 8, "guidance_scale": 1.0, "seed": 42},
         ),
-        require_perf_baseline=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1067,7 +1065,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             output_size="1024x1024",
             extras={"seed": 42},
         ),
-        require_perf_baseline=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1080,7 +1077,7 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             output_size="2048x2048",
             extras={"num_inference_steps": 50, "guidance_scale": 4.0, "seed": 42},
         ),
-        require_perf_baseline=False,
+        run_perf_check=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1091,7 +1088,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             output_size="2048x2048",
             extras={"num_inference_steps": 50, "guidance_scale": 5.0, "seed": 42},
         ),
-        require_perf_baseline=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1110,7 +1106,7 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             fps=24,
             extras={"seed": 0},
         ),
-        require_perf_baseline=False,
+        run_perf_check=False,
         run_consistency_check=False,
     ),
     DiffusionTestCase(
@@ -1119,17 +1115,20 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             model_path="nvidia/Cosmos3-Nano-Sim-Transfer", modality="video"
         ),
         DiffusionSamplingParams(
-            prompt="A small red house in a green field under a clear blue sky.",
+            prompt=(
+                "A woman in a black dress dances barefoot on a pale platform in an "
+                "outdoor timber yard at dusk, with trees and stacked logs behind her."
+            ),
             output_size="832x480",
-            num_frames=HOUSE_BLUR_CONTROL_FRAMES,
+            num_frames=SIM_TRANSFER_BLUR_FRAMES,
             extras={
                 "seed": 0,
-                "fps": HOUSE_BLUR_CONTROL_FPS,
-                "control_path": str(HOUSE_BLUR_CONTROL),
+                "fps": SIM_TRANSFER_BLUR_FPS,
+                "control_path": str(SIM_TRANSFER_BLUR_CONTROL),
                 "control_hint": "blur",
             },
         ),
-        require_perf_baseline=False,
+        run_perf_check=False,
         run_consistency_check=False,
         run_t2v_input_reference_check=False,
     ),
@@ -1146,7 +1145,7 @@ NIGHTLY_ONE_GPU_B200_CASES = [
                 "num_inference_steps": 12,
             },
         ),
-        require_perf_baseline=False,
+        run_perf_check=False,
         run_consistency_check=False,
         run_t2v_input_reference_check=False,
     ),
@@ -1156,7 +1155,7 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             model_path="nvidia/Cosmos3-Nano-Sim-Auto", modality="video"
         ),
         _COSMOS3_ROAD_MULTIVIEW_SAMPLING_PARAMS,
-        require_perf_baseline=False,
+        run_perf_check=False,
         run_consistency_check=False,
         run_t2v_input_reference_check=False,
     ),
@@ -1178,7 +1177,6 @@ NIGHTLY_ONE_GPU_B200_CASES = [
             },
         ),
         LINGBOT_WORLD_2_REALTIME_sampling_params,
-        require_perf_baseline=False,
         run_consistency_check=False,
         run_models_api_check=False,
         run_t2v_input_reference_check=False,

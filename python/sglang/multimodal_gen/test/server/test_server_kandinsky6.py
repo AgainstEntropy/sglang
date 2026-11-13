@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Kandinsky 6 checkpoint test, run nightly on one B200.
 
-SGLANG_KANDINSKY6_TEST_MODEL overrides the checkpoint and
-SGLANG_KANDINSKY6_TEST_SERVER_ARGS selects the topology.
+SGLANG_KANDINSKY6_TEST_MODEL overrides the checkpoint,
+SGLANG_KANDINSKY6_TEST_SERVER_ARGS selects the topology and
+SGLANG_TEST_SERVER_PORT the server port.
 """
 
 import io
@@ -37,7 +38,7 @@ MODEL = os.environ.get(
 def server():
     manager = ServerManager(
         model=MODEL,
-        port=get_dynamic_server_port(),
+        port=int(os.environ.get("SGLANG_TEST_SERVER_PORT", get_dynamic_server_port())),
         # A cold cache downloads ~80 GB before the server comes up.
         wait_deadline=float(os.environ.get("SGLANG_TEST_WAIT_SECS", "2400")),
         extra_args=(
