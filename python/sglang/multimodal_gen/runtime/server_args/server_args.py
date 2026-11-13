@@ -76,6 +76,9 @@ from sglang.multimodal_gen.runtime.server_args.auto_tune import (
     ServerArgsAutoTuner,
 )
 from sglang.multimodal_gen.runtime.server_args.disagg import DisaggServerArgsMixin
+from sglang.multimodal_gen.runtime.server_args.retired_cli_options import (
+    reject_retired_cli_options,
+)
 from sglang.multimodal_gen.runtime.utils.argparse import (
     FlexibleArgumentParser,
     StoreBoolean,
@@ -3718,6 +3721,8 @@ class ServerArgs(DisaggServerArgsMixin):
         if unknown_args is None:
             unknown_args = []
 
+        # Before the dynamic --<component>-path alias can swallow a retired name.
+        reject_retired_cli_options(unknown_args)
         dynamic_quantizations, remaining = cls._extract_component_quantizations(
             unknown_args
         )

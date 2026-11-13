@@ -2637,6 +2637,11 @@ _DEPRECATED_ENVS: Dict[str, _DeprecatedEnv] = {
         note="Strategy-based prefill context parallelism is now the only generic implementation."
     ),
     "SGLANG_TRACE_QWEN35_FINAL_NORM": _DeprecatedEnv(),
+    "MINIMAX_H3_VAE_DECODER_FUSED_NORM": _DeprecatedEnv(
+        note="It is ignored: the MiniMax-H3 VAE decoder's fused norms run on "
+        "NVIDIA GPUs and follow the request quality; quality=exact runs the "
+        "unfused decoder."
+    ),
     "SGLANG_OPT_SM120_MTP_ROUTER_TOP22": _DeprecatedEnv(
         note="The default MoE router is faster for this shape."
     ),

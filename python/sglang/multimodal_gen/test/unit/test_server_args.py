@@ -7,6 +7,7 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
+import pytest
 import zmq
 
 from sglang.cli.utils import get_is_diffusion_model
@@ -4210,3 +4211,124 @@ def test_resident_layer_help_describes_the_actual_scope():
     assert "still benefits" not in per_component_help
     assert "once per request" in per_component_help
     assert "has no effect" in per_component_help
+
+
+_REMOVED_DISAGG_OPTIONS = (
+    "--disagg-downstream-wait-timeout",
+    "--disagg-instance-id",
+    "--disagg-max-slots-per-instance",
+    "--disagg-role-device",
+    "--disagg-transfer-backend",
+    "--disagg-transfer-pin-memory",
+    "--disagg-transfer-redundancy",
+)
+
+
+def _parse_diffusion_cli(subcommand: str, argv: list[str]):
+    from sglang.multimodal_gen.runtime.entrypoints.cli.generate import (
+        add_multimodal_gen_generate_args,
+    )
+    from sglang.multimodal_gen.runtime.entrypoints.cli.serve import (
+        add_multimodal_gen_serve_args,
+    )
+
+    parser = FlexibleArgumentParser()
+    if subcommand == "serve":
+        add_multimodal_gen_serve_args(parser)
+    else:
+        add_multimodal_gen_generate_args(parser)
+    return parser.parse_known_args(["--model-path", "owner/model", *argv])
+
+
+@pytest.mark.parametrize(
+    "subcommand, argv, expected",
+    [
+        (
+            "serve",
+            ["--mask-strategy-file-path", "/tmp/sta.json"],
+            "--attention-backend-config mask_strategy_file_path=/tmp/sta.json",
+        ),
+        (
+            "serve",
+            ["--mask_strategy_file_path=/tmp/sta.json"],
+            "--attention-backend-config mask_strategy_file_path=/tmp/sta.json",
+        ),
+        (
+            "serve",
+            ["--sp-degree", "4", "--sp-attention-mode", "kv_gather"],
+            "--kv-gather-degree N",
+        ),
+        ("serve", ["--adjust-frames", "false"], "`sglang generate`"),
+        ("generate", ["--prompt", "cat", "--num-layers", "4"], "Number of layers: N"),
+        (
+            "generate",
+            ["--prompt", "cat", "--output-size", "1024x1024"],
+            "--width W --height H",
+        ),
+    ]
+    + [
+        ("serve", [option, "1"], "it had no effect")
+        for option in _REMOVED_DISAGG_OPTIONS
+    ],
+)
+def test_retired_cli_option_names_its_replacement(subcommand, argv, expected):
+    """A 0.5.x spelling must fail naming the new one: not as a bare parse error,
+    and not stored as a component path (--mask-strategy-file-path)."""
+    args, unknown_args = _parse_diffusion_cli(subcommand, argv)
+    with pytest.raises(SystemExit) as exc_info:
+        ServerArgs.from_cli_args(args, unknown_args)
+    assert expected in str(exc_info.value)
+    assert "unrecognized arguments" not in str(exc_info.value)
+
+
+def test_retired_cli_options_are_not_current_options():
+    """An entry whose option the parser accepts again (re-added, or matched as an
+    argparse abbreviation) would never fire."""
+    from sglang.multimodal_gen.runtime.server_args.retired_cli_options import (
+        RETIRED_CLI_OPTIONS,
+    )
+
+    for subcommand in ("serve", "generate"):
+        for option in RETIRED_CLI_OPTIONS:
+            if subcommand == "generate" and option == "--adjust-frames":
+                continue
+            _, unknown_args = _parse_diffusion_cli(subcommand, [option, "1"])
+            assert option in unknown_args, (subcommand, option)
+
+
+def test_retired_cli_options_leave_current_spellings_alone():
+    from sglang.multimodal_gen.runtime.server_args.retired_cli_options import (
+        reject_retired_cli_options,
+    )
+
+    args, unknown_args = _parse_diffusion_cli("generate", ["--adjust-frames", "false"])
+    assert unknown_args == []
+    assert args.adjust_frames is False
+
+    unknown_args = [
+        "--vae-path",
+        "/custom/vae",
+        "--text-encoder-2-path=/custom/te2",
+        "--transformer-weights-path",
+        "/custom/transformer.safetensors",
+    ]
+    reject_retired_cli_options(unknown_args)
+    weights_paths, remaining = ServerArgs._extract_component_weights_paths(unknown_args)
+    paths, remaining = ServerArgs._extract_component_paths(remaining)
+    assert remaining == []
+    assert paths == {"vae": "/custom/vae", "text_encoder_2": "/custom/te2"}
+    assert weights_paths == {"transformer": "/custom/transformer.safetensors"}
+
+
+def test_removed_minimax_h3_fused_norm_env_warns():
+    """The env var is no longer read; setting it must not pass silently."""
+    env = {**os.environ, "MINIMAX_H3_VAE_DECODER_FUSED_NORM": "0"}
+    result = subprocess.run(
+        [sys.executable, "-W", "always", "-c", "import sglang.srt.environ"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "MINIMAX_H3_VAE_DECODER_FUSED_NORM is deprecated" in result.stderr
+    assert "quality=exact" in result.stderr
