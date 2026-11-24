@@ -24,6 +24,7 @@ eager chain they must reproduce is available.
 """
 
 import sys
+from collections import defaultdict
 
 import pytest
 import torch
@@ -42,6 +43,7 @@ from sglang.kernels.ops.diffusion import (
     channel_rmsnorm_finish_silu,
     channel_rmsnorm_silu_nhwc,
     group_norm_silu_4d,
+    group_norm_silu_rows,
     rmsnorm_scale,
     rmsnorm_tanh_residual,
     triton_group_norm_silu,
@@ -169,6 +171,54 @@ def test_group_norm_silu_4d_channels_last_and_guards():
     ]
     for args in rejected:
         assert not can_use_group_norm_silu_4d(*args, 32)
+
+
+@torch.no_grad()
+def test_group_norm_silu_twopass_compiles_once_across_resolutions(monkeypatch):
+    """Varying resolution or row length must not recompile any pass."""
+    from sglang.kernels.ops.diffusion.norm import (
+        group_norm_silu_twopass_triton as twopass,
+    )
+
+    dev = torch.cuda.current_device()
+    kernels = (
+        twopass._gn_partial_rows_kernel,
+        twopass._gn_finalize_kernel,
+        twopass._gn_apply_rows_kernel,
+    )
+    caches = {}
+    for k in kernels:
+        monkeypatch.setattr(k, "device_caches", defaultdict(k.create_binder))
+        caches[k.__name__] = k.device_caches[dev][0]
+
+    c, num_groups, eps = 512, 32, 1e-6
+    gn = nn.GroupNorm(num_groups, c, eps=eps).to(DEVICE, torch.bfloat16)
+
+    for shape in (
+        (1, c, 128, 128),
+        (1, c, 96, 128),
+        (1, c, 64, 64),
+        (1, c, 16, 16),
+        (1, c, 50, 50),
+        (2, c, 90, 160),
+    ):
+        x = torch.randn(shape, device=DEVICE, dtype=torch.bfloat16).to(
+            memory_format=torch.channels_last
+        )
+        out = group_norm_silu_4d(x, gn.weight, gn.bias, num_groups, eps)
+        assert out.is_contiguous(memory_format=torch.channels_last)
+        torch.testing.assert_close(
+            out.float(), F.silu(gn(x)).float(), atol=0.06, rtol=0
+        )
+
+    for n_batch, rows in ((1, 1), (1, 17), (2, 100)):
+        x3 = torch.randn(n_batch, rows, c, device=DEVICE, dtype=torch.bfloat16)
+        out3 = group_norm_silu_rows(x3, gn.weight, gn.bias, num_groups, eps)
+        ref3 = F.silu(gn(x3.transpose(1, 2))).transpose(1, 2)
+        torch.testing.assert_close(out3.float(), ref3.float(), atol=0.06, rtol=0)
+
+    for name, cache in caches.items():
+        assert len(cache) == 1, f"{name} compiled {len(cache)} variants across shapes"
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ _SUPPORTED_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
 _MAX_CHANNELS = 2048
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rows"])
 def _gn_partial_rows_kernel(
     x_ptr,
     psum_ptr,
@@ -63,7 +63,7 @@ def _gn_partial_rows_kernel(
     tl.store(psq_ptr + out_off, acc_q)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["nchunks", "group_numel"])
 def _gn_finalize_kernel(
     psum_ptr,
     psq_ptr,
@@ -100,7 +100,7 @@ def _gn_finalize_kernel(
     tl.store(ss_ptr + (n * 2 + 1) * C + cols, shift)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["rows"])
 def _gn_apply_rows_kernel(
     x_ptr,
     ss_ptr,
@@ -139,7 +139,8 @@ def _gn_silu_rows(x3, weight, bias, num_groups, eps, apply_silu):
             x3, psum, psq, rows, rows_per_prog, C=c, BLOCK_R=block_r, num_warps=4
         )
         ss = torch.empty((n_batch, 2, c), device=x3.device, dtype=torch.float32)
-        block_k = max(1, min(4096 // cpg, triton.next_power_of_2(nchunks)))
+        # Fixed per CPG so varying nchunks across resolutions reuses one kernel.
+        block_k = max(1, 4096 // cpg)
         _gn_finalize_kernel[(num_groups, n_batch)](
             psum,
             psq,
